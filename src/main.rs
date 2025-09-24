@@ -9,7 +9,10 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::render::TextureCreator;
 use sdl2::video::WindowContext;
+use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use std::env;
+use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use anyhow::Result;
 
@@ -19,6 +22,21 @@ use crate::system::System;
 use crate::ppu::{SCREEN_WIDTH, SCREEN_HEIGHT};
 
 const SCALE: u32 = 3;
+
+struct ApuAudioCallback {
+    audio_buffer: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl AudioCallback for ApuAudioCallback {
+    type Channel = f32;
+
+    fn callback(&mut self, out: &mut [f32]) {
+        let mut buffer = self.audio_buffer.lock().unwrap();
+        for sample in out.iter_mut() {
+            *sample = buffer.pop_front().unwrap_or(0.0);
+        }
+    }
+}
 
 fn map_keycode_to_button(key: Keycode) -> Option<ControllerButton> {
     match key {
@@ -51,6 +69,7 @@ fn main() -> Result<()> {
 
     let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
     let video_subsystem = sdl_context.video().map_err(|e| anyhow::anyhow!("Video subsystem failed: {}", e))?;
+    let audio_subsystem = sdl_context.audio().map_err(|e| anyhow::anyhow!("Audio subsystem failed: {}", e))?;
 
     let window = video_subsystem
         .window(
@@ -79,6 +98,26 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Texture creation failed: {}", e))?;
 
     let mut event_pump = sdl_context.event_pump().map_err(|e| anyhow::anyhow!("Event pump failed: {}", e))?;
+
+    // Setup audio
+    let audio_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(16384)));
+    let audio_buffer_clone = Arc::clone(&audio_buffer);
+    
+    let desired_spec = AudioSpecDesired {
+        freq: Some(44100),
+        channels: Some(1),
+        samples: Some(1024),  // Larger buffer for smoother playback
+    };
+    
+    let audio_device = audio_subsystem
+        .open_playback(None, &desired_spec, |_spec| {
+            ApuAudioCallback {
+                audio_buffer: audio_buffer_clone,
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to open audio device: {}", e))?;
+    
+    audio_device.resume();
 
     let mut system = System::new();
     system.load_cartridge(cartridge);
@@ -121,7 +160,7 @@ fn main() -> Result<()> {
             }
         }
 
-        system.run_frame();
+        system.run_frame_with_audio(Some(&audio_buffer));
 
         texture
             .update(None, system.get_frame_buffer(), SCREEN_WIDTH * 3)

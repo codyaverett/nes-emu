@@ -64,9 +64,6 @@ pub struct Ppu {
     pub status: PpuStatus,
     pub oam_addr: u8,
     pub oam_data: [u8; 256],
-    pub scroll_x: u8,
-    pub scroll_y: u8,
-    pub ppu_addr: u16,
     pub ppu_data_buffer: u8,
     pub vram: [u8; 0x4000],
     pub palette: [u8; 32],
@@ -78,8 +75,11 @@ pub struct Ppu {
     pub frame_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
     pub nmi_interrupt: bool,
     
-    write_latch: bool,
-    temp_vram_addr: u16,
+    // PPU internal registers for scrolling
+    v: u16,     // Current VRAM address (15 bits)
+    t: u16,     // Temporary VRAM address (15 bits)
+    x: u8,      // Fine X scroll (3 bits)
+    w: bool,    // Write latch
     
     // Sprite evaluation data
     secondary_oam: [u8; 32],
@@ -99,9 +99,6 @@ impl Ppu {
             status: PpuStatus::empty(),
             oam_addr: 0,
             oam_data: [0; 256],
-            scroll_x: 0,
-            scroll_y: 0,
-            ppu_addr: 0,
             ppu_data_buffer: 0,
             vram: [0; 0x4000],
             palette: [0; 32],
@@ -110,8 +107,10 @@ impl Ppu {
             frame: 0,
             frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
             nmi_interrupt: false,
-            write_latch: false,
-            temp_vram_addr: 0,
+            v: 0,
+            t: 0,
+            x: 0,
+            w: false,
             secondary_oam: [0xFF; 32],
             sprite_count: 0,
             sprite_zero_in_secondary: false,
@@ -139,14 +138,13 @@ impl Ppu {
         self.mask = PpuMask::empty();
         self.status = PpuStatus::empty();
         self.oam_addr = 0;
-        self.scroll_x = 0;
-        self.scroll_y = 0;
-        self.ppu_addr = 0;
         self.ppu_data_buffer = 0;
         self.scanline = 0;
         self.cycle = 0;
-        self.write_latch = false;
-        self.temp_vram_addr = 0;
+        self.v = 0;
+        self.t = 0;
+        self.x = 0;
+        self.w = false;
         self.nmi_interrupt = false;
     }
 
@@ -175,7 +173,7 @@ impl Ppu {
     fn read_status(&mut self) -> u8 {
         let result = self.status.bits();
         self.status.remove(PpuStatus::VBLANK_STARTED);
-        self.write_latch = false;
+        self.w = false;  // Clear write latch
         result
     }
 
@@ -184,7 +182,7 @@ impl Ppu {
     }
 
     fn read_ppu_data(&mut self) -> u8 {
-        let addr = self.ppu_addr & 0x3FFF;
+        let addr = self.v & 0x3FFF;
         let result = if addr < 0x3F00 {
             let buffered = self.ppu_data_buffer;
             self.ppu_data_buffer = self.read_vram(addr);
@@ -194,9 +192,11 @@ impl Ppu {
             self.read_vram(addr)
         };
         
-        self.ppu_addr = self.ppu_addr.wrapping_add(
-            if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) { 32 } else { 1 }
-        );
+        if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) {
+            self.v = (self.v + 32) & 0x7FFF;
+        } else {
+            self.v = (self.v + 1) & 0x7FFF;
+        }
         result
     }
 
@@ -209,7 +209,8 @@ impl Ppu {
             self.nmi_interrupt = true;
         }
         
-        self.temp_vram_addr = (self.temp_vram_addr & !0x0C00) | ((value as u16 & 0x03) << 10);
+        // Set nametable bits in temporary address
+        self.t = (self.t & !0x0C00) | ((value as u16 & 0x03) << 10);
     }
 
     fn write_mask(&mut self, value: u8) {
@@ -226,34 +227,40 @@ impl Ppu {
     }
 
     fn write_scroll(&mut self, value: u8) {
-        if !self.write_latch {
-            self.scroll_x = value;
-            self.temp_vram_addr = (self.temp_vram_addr & !0x001F) | ((value as u16) >> 3);
+        if !self.w {
+            // First write (X scroll)
+            self.x = value & 0x07;  // Fine X scroll (3 bits)
+            self.t = (self.t & !0x001F) | ((value as u16) >> 3);  // Coarse X
         } else {
-            self.scroll_y = value;
-            self.temp_vram_addr = (self.temp_vram_addr & !0x73E0) | 
-                                 (((value as u16) & 0x07) << 12) | 
-                                 (((value as u16) & 0xF8) << 2);
+            // Second write (Y scroll)
+            self.t = (self.t & !0x73E0) | 
+                     (((value as u16) & 0x07) << 12) |  // Fine Y
+                     (((value as u16) & 0xF8) << 2);    // Coarse Y
         }
-        self.write_latch = !self.write_latch;
+        self.w = !self.w;
     }
 
     fn write_ppu_addr(&mut self, value: u8) {
-        if !self.write_latch {
-            self.temp_vram_addr = (self.temp_vram_addr & 0x00FF) | ((value as u16 & 0x3F) << 8);
+        if !self.w {
+            // First write (high byte)
+            self.t = (self.t & 0x00FF) | ((value as u16 & 0x3F) << 8);
         } else {
-            self.temp_vram_addr = (self.temp_vram_addr & 0xFF00) | value as u16;
-            self.ppu_addr = self.temp_vram_addr;
+            // Second write (low byte)
+            self.t = (self.t & 0xFF00) | value as u16;
+            self.v = self.t;  // Copy t to v
         }
-        self.write_latch = !self.write_latch;
+        self.w = !self.w;
     }
 
     fn write_ppu_data(&mut self, value: u8) {
-        let addr = self.ppu_addr & 0x3FFF;
+        let addr = self.v & 0x3FFF;
         self.write_vram(addr, value);
-        self.ppu_addr = self.ppu_addr.wrapping_add(
-            if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) { 32 } else { 1 }
-        );
+        
+        if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) {
+            self.v = (self.v + 32) & 0x7FFF;
+        } else {
+            self.v = (self.v + 1) & 0x7FFF;
+        }
     }
 
     pub fn _oam_dma(&mut self, data: &[u8; 256]) {
@@ -298,6 +305,8 @@ impl Ppu {
 
     pub fn step(&mut self) {
         self.cycle += 1;
+        
+        let rendering_enabled = self.mask.contains(PpuMask::SHOW_BG) || self.mask.contains(PpuMask::SHOW_SPRITES);
 
         if self.scanline < 240 {
             // Visible scanlines (0-239)
@@ -318,19 +327,43 @@ impl Ppu {
             }
             
             // Render when background or sprites are enabled
-            if (self.mask.contains(PpuMask::SHOW_BG) || self.mask.contains(PpuMask::SHOW_SPRITES)) 
-                && self.cycle >= 1 && self.cycle <= 256 {
+            if rendering_enabled && self.cycle >= 1 && self.cycle <= 256 {
                 self.render_pixel();
+            }
+            
+            // Scrolling updates for rendering
+            if rendering_enabled {
+                if self.cycle == 256 {
+                    self.increment_y();  // Increment Y at end of visible part
+                }
+                if self.cycle == 257 {
+                    self.copy_x();  // Copy horizontal bits from t to v
+                }
             }
         } else if self.scanline == 241 && self.cycle == 1 {
             self.status.insert(PpuStatus::VBLANK_STARTED);
             if self.ctrl.contains(PpuCtrl::NMI_ENABLE) {
                 self.nmi_interrupt = true;
             }
-        } else if self.scanline == 261 && self.cycle == 1 {
-            self.status.remove(PpuStatus::VBLANK_STARTED);
-            self.status.remove(PpuStatus::SPRITE_ZERO_HIT);
-            self.status.remove(PpuStatus::SPRITE_OVERFLOW);
+        } else if self.scanline == 261 {
+            if self.cycle == 1 {
+                self.status.remove(PpuStatus::VBLANK_STARTED);
+                self.status.remove(PpuStatus::SPRITE_ZERO_HIT);
+                self.status.remove(PpuStatus::SPRITE_OVERFLOW);
+            }
+            
+            // Pre-render scanline updates
+            if rendering_enabled {
+                if self.cycle >= 280 && self.cycle <= 304 {
+                    self.copy_y();  // Copy vertical bits from t to v
+                }
+                if self.cycle == 256 {
+                    self.increment_y();
+                }
+                if self.cycle == 257 {
+                    self.copy_x();
+                }
+            }
         }
 
         if self.cycle >= 341 {
@@ -414,18 +447,64 @@ impl Ppu {
         }
     }
 
-    fn get_background_pixel(&self, x: u16, y: u16) -> u8 {
-        let scroll_x = self.scroll_x as u16 + x;
-        let scroll_y = self.scroll_y as u16 + y;
+    fn increment_x(&mut self) {
+        // Increment coarse X
+        if (self.v & 0x001F) == 31 {
+            self.v &= !0x001F;  // Clear coarse X
+            self.v ^= 0x0400;   // Switch horizontal nametable
+        } else {
+            self.v += 1;
+        }
+    }
+    
+    fn increment_y(&mut self) {
+        // Increment fine Y
+        if (self.v & 0x7000) != 0x7000 {
+            self.v += 0x1000;
+        } else {
+            self.v &= !0x7000;  // Clear fine Y
+            let mut y = (self.v & 0x03E0) >> 5;  // Get coarse Y
+            if y == 29 {
+                y = 0;
+                self.v ^= 0x0800;  // Switch vertical nametable
+            } else if y == 31 {
+                y = 0;  // Wrap around without switching nametable
+            } else {
+                y += 1;
+            }
+            self.v = (self.v & !0x03E0) | (y << 5);
+        }
+    }
+    
+    fn copy_x(&mut self) {
+        // Copy horizontal position from t to v
+        self.v = (self.v & !0x041F) | (self.t & 0x041F);
+    }
+    
+    fn copy_y(&mut self) {
+        // Copy vertical position from t to v
+        self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
+    }
+    
+    fn get_background_pixel(&self, x: u16, _y: u16) -> u8 {
+        // Use current scroll position from v register
+        let addr = self.v;
         
-        let tile_x = (scroll_x / 8) & 0x1F;
-        let tile_y = (scroll_y / 8) & 0x1F;
-        let fine_x = scroll_x & 7;
-        let fine_y = scroll_y & 7;
+        // Extract scroll components from v register
+        let coarse_x = (addr & 0x001F) as u16;
+        let coarse_y = ((addr >> 5) & 0x001F) as u16;
+        let nametable = ((addr >> 10) & 0x0003) as u16;
+        let fine_y = ((addr >> 12) & 0x0007) as u16;
+        
+        // Calculate tile position - x is the pixel position on screen (0-255)
+        // We need to add fine X scroll to get the correct pixel within the current tile
+        let fine_x = (x + self.x as u16) & 0x07;
+        let tile_offset = ((x + self.x as u16) >> 3) as u16;
+        let tile_x = (coarse_x + tile_offset) & 0x1F;
         
         // Read from nametable in VRAM
-        let nametable_base = 0x2000;
-        let nametable_addr = nametable_base + (tile_y * 32 + tile_x);
+        let nametable_base = 0x2000 | (nametable << 10);
+        let nametable_addr = nametable_base + (coarse_y * 32 + tile_x);
         let tile_id = self.read_vram(nametable_addr) as u16;
         
         // Get pattern from CHR ROM area
@@ -444,11 +523,12 @@ impl Ppu {
         
         // Get attribute for palette selection
         let attr_table_x = tile_x / 4;
-        let attr_table_y = tile_y / 4;
-        let attr_addr = 0x23C0 + attr_table_y * 8 + attr_table_x;
+        let attr_table_y = coarse_y / 4;
+        let attr_base = nametable_base + 0x3C0;
+        let attr_addr = attr_base + attr_table_y * 8 + attr_table_x;
         let attr_byte = self.read_vram(attr_addr);
         
-        let palette_shift = ((tile_y % 4) / 2) * 4 + ((tile_x % 4) / 2) * 2;
+        let palette_shift = ((coarse_y % 4) / 2) * 4 + ((tile_x % 4) / 2) * 2;
         let palette_index = ((attr_byte >> palette_shift) & 0x03) << 2;
         
         palette_index | pixel

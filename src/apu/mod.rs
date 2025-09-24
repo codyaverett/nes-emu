@@ -499,15 +499,25 @@ impl Apu {
     fn clock_sweeps(&mut self) {
     }
 
-    pub fn _get_output(&self) -> f32 {
+    pub fn get_output(&self) -> f32 {
         let pulse1 = self.pulse1._get_output() as f32;
         let pulse2 = self.pulse2._get_output() as f32;
         let triangle = self.triangle._get_output() as f32;
         let noise = self.noise._get_output() as f32;
         let dmc = self.dmc._get_output() as f32;
         
-        let pulse_out = 95.52 / (8128.0 / (pulse1 + pulse2) + 100.0);
-        let tnd_out = 159.79 / (1.0 / (triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0) + 100.0);
+        // Mix the channels using the NES non-linear mixing formula
+        let pulse_out = if pulse1 + pulse2 > 0.0 {
+            95.52 / (8128.0 / (pulse1 + pulse2) + 100.0)
+        } else {
+            0.0
+        };
+        
+        let tnd_out = if triangle + noise + dmc > 0.0 {
+            159.79 / (1.0 / (triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0) + 100.0)
+        } else {
+            0.0
+        };
         
         pulse_out + tnd_out
     }

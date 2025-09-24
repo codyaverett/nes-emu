@@ -2,6 +2,8 @@ use crate::cartridge::Cartridge;
 use crate::input::Controller;
 use crate::ppu::Ppu;
 use crate::apu::Apu;
+use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
 
 pub struct System {
     cpu_ram: [u8; 0x800],
@@ -17,6 +19,8 @@ pub struct System {
     pub controller2: Controller,
     pub cartridge: Option<Cartridge>,
     cycles: u64,
+    oam_dma_cycles: u16,
+    audio_sample_counter: f64,
 }
 
 impl System {
@@ -35,6 +39,8 @@ impl System {
             controller2: Controller::new(),
             cartridge: None,
             cycles: 0,
+            oam_dma_cycles: 0,
+            audio_sample_counter: 0.0,
         }
     }
 
@@ -116,11 +122,17 @@ impl System {
             0x2000..=0x3FFF => self.ppu.write_register(0x2000 | (addr & 0x0007), value),
             0x4000..=0x4013 | 0x4015 => self.apu.write_register(addr, value),
             0x4014 => {
-                // OAM DMA
+                // OAM DMA - Direct Memory Access to PPU OAM
                 let page = (value as u16) << 8;
+                
+                // DMA takes 513 or 514 cycles (513 on odd CPU cycles, 514 on even)
+                // For now we'll use 513 cycles
+                self.oam_dma_cycles = 513;
+                
+                // Copy 256 bytes from CPU memory to OAM
                 for i in 0..256 {
                     let data = self.read_byte(page | i);
-                    self.ppu.oam_data[i as usize] = data;
+                    self.ppu.oam_data[(self.ppu.oam_addr as usize + i as usize) & 0xFF] = data;
                 }
             }
             0x4016 => {
@@ -150,8 +162,17 @@ impl System {
     }
 
     pub fn run_frame(&mut self) -> bool {
+        self.run_frame_with_audio(None)
+    }
+    
+    pub fn run_frame_with_audio(&mut self, audio_buffer: Option<&Arc<Mutex<VecDeque<f32>>>>) -> bool {
         let target_cycles = 29780;
         let start_frame = self.ppu.frame;
+        
+        // For audio sampling - use persistent counter
+        let cpu_clock_rate = 1789773.0;
+        let audio_sample_rate = 44100.0;
+        let cycles_per_sample = cpu_clock_rate / audio_sample_rate;
         
         while self.cycles < target_cycles {
             // CPU runs at 1/3 the speed of PPU
@@ -174,6 +195,21 @@ impl System {
             }
             
             self.apu.step();
+            
+            // Generate audio samples if buffer is provided
+            if let Some(buffer) = audio_buffer {
+                self.audio_sample_counter += cpu_cycles as f64;
+                while self.audio_sample_counter >= cycles_per_sample {
+                    self.audio_sample_counter -= cycles_per_sample;
+                    let sample = self.apu.get_output();
+                    
+                    let mut audio_buf = buffer.lock().unwrap();
+                    if audio_buf.len() < 8192 {  // Larger buffer to prevent underruns
+                        audio_buf.push_back(sample);
+                    }
+                }
+            }
+            
             self.cycles += cpu_cycles as u64;
         }
         
@@ -182,6 +218,13 @@ impl System {
     }
 
     fn cpu_step(&mut self) -> u8 {
+        // Handle OAM DMA cycles
+        if self.oam_dma_cycles > 0 {
+            let cycles = self.oam_dma_cycles.min(4) as u8;
+            self.oam_dma_cycles -= cycles as u16;
+            return cycles;
+        }
+        
         let opcode = self.read_byte(self.cpu_pc);
         let old_pc = self.cpu_pc;
         self.cpu_pc = self.cpu_pc.wrapping_add(1);
@@ -338,11 +381,12 @@ impl System {
                 3
             }
             0xBD => { // LDA absolute,X
-                let addr = self.read_word(self.cpu_pc);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
-                self.cpu_a = self.read_byte(addr.wrapping_add(self.cpu_x as u16));
+                self.cpu_a = self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xC9 => { // CMP immediate
                 let value = self.read_byte(self.cpu_pc);
@@ -538,10 +582,11 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 self.cpu_a = self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             0xB5 => { // LDA zero page,X
                 let addr = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -551,11 +596,12 @@ impl System {
                 4
             }
             0xB9 => { // LDA absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a = self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xA6 => { // LDX zero page
                 let addr = self.read_byte(self.cpu_pc) as u16;
@@ -930,11 +976,12 @@ impl System {
                 4
             }
             0xBE => { // LDX absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_x = self.read_byte(addr);
                 self.update_nz(self.cpu_x);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xB6 => { // LDX zero page,Y
                 let addr = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_y) as u16 & 0xFF;
@@ -951,11 +998,12 @@ impl System {
                 4
             }
             0xBC => { // LDY absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_y = self.read_byte(addr);
                 self.update_nz(self.cpu_y);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             // More STX/STY variants
             0x8C => { // STY absolute
@@ -1011,7 +1059,8 @@ impl System {
                 4
             }
             0xDD => { // CMP absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 let result = self.cpu_a.wrapping_sub(value);
@@ -1019,10 +1068,11 @@ impl System {
                     | if self.cpu_a >= value { 0x01 } else { 0 }
                     | if result == 0 { 0x02 } else { 0 }
                     | if result & 0x80 != 0 { 0x80 } else { 0 };
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xD9 => { // CMP absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 let result = self.cpu_a.wrapping_sub(value);
@@ -1030,7 +1080,7 @@ impl System {
                     | if self.cpu_a >= value { 0x01 } else { 0 }
                     | if result == 0 { 0x02 } else { 0 }
                     | if result & 0x80 != 0 { 0x80 } else { 0 };
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xC1 => { // CMP (indirect,X)
                 let base = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -1051,14 +1101,15 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 let value = self.read_byte(addr);
                 let result = self.cpu_a.wrapping_sub(value);
                 self.cpu_status = (self.cpu_status & !0x83)
                     | if self.cpu_a >= value { 0x01 } else { 0 }
                     | if result == 0 { 0x02 } else { 0 }
                     | if result & 0x80 != 0 { 0x80 } else { 0 };
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             // AND variants
             0x25 => { // AND zero page
@@ -1083,18 +1134,20 @@ impl System {
                 4
             }
             0x3D => { // AND absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a &= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x39 => { // AND absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a &= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x21 => { // AND (indirect,X)
                 let base = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -1111,10 +1164,11 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 self.cpu_a &= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             // ORA variants
             0x05 => { // ORA zero page
@@ -1139,18 +1193,20 @@ impl System {
                 4
             }
             0x1D => { // ORA absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a |= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x19 => { // ORA absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a |= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x01 => { // ORA (indirect,X)
                 let base = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -1167,10 +1223,11 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 self.cpu_a |= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             // EOR variants
             0x45 => { // EOR zero page
@@ -1195,18 +1252,20 @@ impl System {
                 4
             }
             0x5D => { // EOR absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a ^= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x59 => { // EOR absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 self.cpu_a ^= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x41 => { // EOR (indirect,X)
                 let base = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -1223,10 +1282,11 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 self.cpu_a ^= self.read_byte(addr);
                 self.update_nz(self.cpu_a);
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             // ADC variants
             0x65 => { // ADC zero page
@@ -1251,18 +1311,20 @@ impl System {
                 4
             }
             0x7D => { // ADC absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 self.adc(value);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x79 => { // ADC absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 self.adc(value);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0x61 => { // ADC (indirect,X)
                 let base = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -1279,10 +1341,11 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 let value = self.read_byte(addr);
                 self.adc(value);
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             // SBC variants
             0xE5 => { // SBC zero page
@@ -1307,18 +1370,20 @@ impl System {
                 4
             }
             0xFD => { // SBC absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 self.sbc(value);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xF9 => { // SBC absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 self.sbc(value);
-                4
+                if Self::page_crossed(base, addr) { 5 } else { 4 }
             }
             0xE1 => { // SBC (indirect,X)
                 let base = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16;
@@ -1335,10 +1400,11 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 let value = self.read_byte(addr);
                 self.sbc(value);
-                5
+                if Self::page_crossed(indirect, addr) { 6 } else { 5 }
             }
             // CPX/CPY variants
             0xE4 => { // CPX zero page
@@ -2091,6 +2157,10 @@ impl System {
         self.cpu_status = (self.cpu_status & !0x82) 
             | if value == 0 { 0x02 } else { 0 }
             | if value & 0x80 != 0 { 0x80 } else { 0 };
+    }
+    
+    fn page_crossed(addr1: u16, addr2: u16) -> bool {
+        (addr1 & 0xFF00) != (addr2 & 0xFF00)
     }
     
     fn adc(&mut self, value: u8) {
