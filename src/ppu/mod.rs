@@ -1,4 +1,5 @@
 use bitflags::bitflags;
+use crate::cartridge::Mirroring;
 
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
@@ -89,6 +90,9 @@ pub struct Ppu {
     sprite_positions: [u8; 8],
     sprite_priorities: [u8; 8],
     sprite_indexes: [u8; 8],
+    
+    // Mirroring mode
+    pub mirroring: Mirroring,
 }
 
 impl Ppu {
@@ -118,6 +122,7 @@ impl Ppu {
             sprite_positions: [0; 8],
             sprite_priorities: [0; 8],
             sprite_indexes: [0; 8],
+            mirroring: Mirroring::Horizontal,
         };
         
         // Initialize with default NES palette values
@@ -270,8 +275,14 @@ impl Ppu {
     fn read_vram(&self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.vram[addr as usize],
-            0x2000..=0x2FFF => self.vram[(addr & 0x0FFF) as usize + 0x2000],
-            0x3000..=0x3EFF => self.vram[((addr - 0x1000) & 0x0FFF) as usize + 0x2000],
+            0x2000..=0x2FFF => {
+                let mirrored_addr = self.mirror_nametable_addr(addr);
+                self.vram[mirrored_addr as usize]
+            }
+            0x3000..=0x3EFF => {
+                // Mirror of 0x2000-0x2EFF
+                self.read_vram(addr - 0x1000)
+            }
             0x3F00..=0x3F1F => {
                 let palette_addr = (addr & 0x1F) as usize;
                 if palette_addr % 4 == 0 && palette_addr >= 16 {
@@ -288,8 +299,14 @@ impl Ppu {
     fn write_vram(&mut self, addr: u16, value: u8) {
         match addr {
             0x0000..=0x1FFF => self.vram[addr as usize] = value,
-            0x2000..=0x2FFF => self.vram[(addr & 0x0FFF) as usize + 0x2000] = value,
-            0x3000..=0x3EFF => self.vram[((addr - 0x1000) & 0x0FFF) as usize + 0x2000] = value,
+            0x2000..=0x2FFF => {
+                let mirrored_addr = self.mirror_nametable_addr(addr);
+                self.vram[mirrored_addr as usize] = value;
+            }
+            0x3000..=0x3EFF => {
+                // Mirror of 0x2000-0x2EFF
+                self.write_vram(addr - 0x1000, value);
+            }
             0x3F00..=0x3F1F => {
                 let palette_addr = (addr & 0x1F) as usize;
                 if palette_addr % 4 == 0 && palette_addr >= 16 {
@@ -302,6 +319,44 @@ impl Ppu {
             _ => {}
         }
     }
+    
+    fn mirror_nametable_addr(&self, addr: u16) -> u16 {
+        let table = (addr - 0x2000) / 0x400;
+        let offset = (addr - 0x2000) % 0x400;
+        
+        let mirrored_table = match self.mirroring {
+            Mirroring::Horizontal => {
+                // 0,1 -> 0; 2,3 -> 1
+                match table {
+                    0 | 1 => 0,
+                    2 | 3 => 1,
+                    _ => table & 0x03,
+                }
+            }
+            Mirroring::Vertical => {
+                // 0,2 -> 0; 1,3 -> 1
+                match table {
+                    0 | 2 => 0,
+                    1 | 3 => 1,
+                    _ => table & 0x03,
+                }
+            }
+            Mirroring::FourScreen => {
+                // Each table is separate (no mirroring)
+                table & 0x03
+            }
+            Mirroring::_SingleScreenLower => {
+                // All tables map to table 0
+                0
+            }
+            Mirroring::_SingleScreenUpper => {
+                // All tables map to table 1
+                1
+            }
+        };
+        
+        0x2000 + mirrored_table * 0x400 + offset
+    }
 
     pub fn step(&mut self) {
         self.cycle += 1;
@@ -311,18 +366,21 @@ impl Ppu {
         if self.scanline < 240 {
             // Visible scanlines (0-239)
             if self.cycle == 1 {
-                // Clear sprite data for this scanline
+                // Clear secondary OAM for sprite evaluation
+                for i in 0..32 {
+                    self.secondary_oam[i] = 0xFF;
+                }
                 self.sprite_count = 0;
                 self.sprite_zero_in_secondary = false;
             }
             
-            // Sprite evaluation for next scanline
-            if self.cycle == 257 && self.mask.contains(PpuMask::SHOW_SPRITES) {
+            // Sprite evaluation happens during cycles 65-256
+            if self.cycle == 65 && self.mask.contains(PpuMask::SHOW_SPRITES) {
                 self.evaluate_sprites();
             }
             
-            // Sprite fetching
-            if self.cycle >= 257 && self.cycle <= 320 && self.mask.contains(PpuMask::SHOW_SPRITES) {
+            // Sprite fetching happens during cycles 257-320
+            if self.cycle == 257 && self.mask.contains(PpuMask::SHOW_SPRITES) {
                 self.fetch_sprites();
             }
             
@@ -331,11 +389,9 @@ impl Ppu {
                 self.render_pixel();
             }
             
-            // Scrolling updates for rendering
+            // Scrolling updates for rendering - simplified for now
             if rendering_enabled {
-                if self.cycle == 256 {
-                    self.increment_y();  // Increment Y at end of visible part
-                }
+                // Basic scrolling support - will improve later
                 if self.cycle == 257 {
                     self.copy_x();  // Copy horizontal bits from t to v
                 }
@@ -352,13 +408,10 @@ impl Ppu {
                 self.status.remove(PpuStatus::SPRITE_OVERFLOW);
             }
             
-            // Pre-render scanline updates
+            // Pre-render scanline updates - simplified for now
             if rendering_enabled {
                 if self.cycle >= 280 && self.cycle <= 304 {
                     self.copy_y();  // Copy vertical bits from t to v
-                }
-                if self.cycle == 256 {
-                    self.increment_y();
                 }
                 if self.cycle == 257 {
                     self.copy_x();
@@ -486,25 +539,19 @@ impl Ppu {
         self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
     }
     
-    fn get_background_pixel(&self, x: u16, _y: u16) -> u8 {
-        // Use current scroll position from v register
-        let addr = self.v;
+    fn get_background_pixel(&self, x: u16, y: u16) -> u8 {
+        // Simple tile rendering without complex scrolling for now
+        // Just get the tile at the current screen position
         
-        // Extract scroll components from v register
-        let coarse_x = (addr & 0x001F) as u16;
-        let coarse_y = ((addr >> 5) & 0x001F) as u16;
-        let nametable = ((addr >> 10) & 0x0003) as u16;
-        let fine_y = ((addr >> 12) & 0x0007) as u16;
+        // Which tile are we rendering? (screen is 32x30 tiles)
+        let tile_x = x / 8;
+        let tile_y = y / 8;
+        let fine_x = x & 0x07;
+        let fine_y = y & 0x07;
         
-        // Calculate tile position - x is the pixel position on screen (0-255)
-        // We need to add fine X scroll to get the correct pixel within the current tile
-        let fine_x = (x + self.x as u16) & 0x07;
-        let tile_offset = ((x + self.x as u16) >> 3) as u16;
-        let tile_x = (coarse_x + tile_offset) & 0x1F;
-        
-        // Read from nametable in VRAM
-        let nametable_base = 0x2000 | (nametable << 10);
-        let nametable_addr = nametable_base + (coarse_y * 32 + tile_x);
+        // For now, just use nametable 0 (0x2000)
+        // TODO: Add proper scrolling support
+        let nametable_addr = 0x2000 + tile_y * 32 + tile_x;
         let tile_id = self.read_vram(nametable_addr) as u16;
         
         // Get pattern from CHR ROM area
@@ -523,12 +570,12 @@ impl Ppu {
         
         // Get attribute for palette selection
         let attr_table_x = tile_x / 4;
-        let attr_table_y = coarse_y / 4;
-        let attr_base = nametable_base + 0x3C0;
+        let attr_table_y = tile_y / 4;
+        let attr_base = 0x2000 + 0x3C0;  // Attribute table for nametable 0
         let attr_addr = attr_base + attr_table_y * 8 + attr_table_x;
         let attr_byte = self.read_vram(attr_addr);
         
-        let palette_shift = ((coarse_y % 4) / 2) * 4 + ((tile_x % 4) / 2) * 2;
+        let palette_shift = ((tile_y % 4) / 2) * 4 + ((tile_x % 4) / 2) * 2;
         let palette_index = ((attr_byte >> palette_shift) & 0x03) << 2;
         
         palette_index | pixel
@@ -548,17 +595,13 @@ impl Ppu {
     }
     
     fn evaluate_sprites(&mut self) {
-        // Clear secondary OAM
-        for i in 0..32 {
-            self.secondary_oam[i] = 0xFF;
-        }
-        
         let mut secondary_index = 0;
         self.sprite_count = 0;
         self.sprite_zero_in_secondary = false;
         
         let sprite_height = if self.ctrl.contains(PpuCtrl::SPRITE_SIZE) { 16 } else { 8 };
-        let y = self.scanline as i16;
+        // Sprites are evaluated for the NEXT scanline
+        let y = (self.scanline + 1) as i16;
         
         // Evaluate all 64 sprites
         for sprite_index in 0..64 {
@@ -569,9 +612,9 @@ impl Ppu {
             }
             
             let oam_offset = sprite_index * 4;
-            let sprite_y = self.oam_data[oam_offset] as i16;
+            let sprite_y = self.oam_data[oam_offset] as i16 + 1; // Sprites are delayed by one scanline
             
-            // Check if sprite is on this scanline
+            // Check if sprite is on the next scanline
             if y >= sprite_y && y < sprite_y + sprite_height {
                 // Copy sprite to secondary OAM
                 if secondary_index < 32 {
@@ -583,7 +626,9 @@ impl Ppu {
                         self.sprite_zero_in_secondary = true;
                     }
                     
-                    self.sprite_indexes[self.sprite_count as usize] = sprite_index as u8;
+                    if self.sprite_count < 8 {
+                        self.sprite_indexes[self.sprite_count as usize] = sprite_index as u8;
+                    }
                     self.sprite_count += 1;
                     secondary_index += 4;
                 }
@@ -601,8 +646,8 @@ impl Ppu {
             let attributes = self.secondary_oam[oam_offset + 2];
             let x_pos = self.secondary_oam[oam_offset + 3];
             
-            // Calculate the line of the sprite to fetch
-            let sprite_y = self.scanline.wrapping_sub(y_pos as u16).wrapping_sub(1);
+            // Calculate the line of the sprite to fetch (sprites fetched are for the next scanline)
+            let sprite_y = (self.scanline + 1).wrapping_sub(y_pos as u16 + 1);
             
             // Handle vertical flip
             let actual_y = if (attributes & 0x80) != 0 {

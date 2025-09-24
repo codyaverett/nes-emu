@@ -68,6 +68,9 @@ impl System {
     }
 
     pub fn load_cartridge(&mut self, cartridge: Cartridge) {
+        // Set mirroring mode from cartridge
+        self.ppu.mirroring = cartridge._mirroring;
+        
         // Copy CHR ROM to PPU VRAM pattern tables if CHR ROM exists
         if !cartridge.chr_rom.is_empty() {
             for i in 0..cartridge.chr_rom.len().min(0x2000) {
