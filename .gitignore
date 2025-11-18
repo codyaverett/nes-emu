@@ -1,2 +1,12 @@
 /target
 roms
+
+# Test outputs
+*.ppm
+*_debug.txt
+check_nametables
+check_nametables.rs
+
+# Documentation test outputs (keep docs structure but ignore generated files)
+docs/testing/test_output/*.ppm
+docs/testing/test_output/*_debug.txt
