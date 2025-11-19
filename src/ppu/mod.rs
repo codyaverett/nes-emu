@@ -539,45 +539,69 @@ impl Ppu {
         self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
     }
     
-    fn get_background_pixel(&self, x: u16, y: u16) -> u8 {
-        // Simple tile rendering without complex scrolling for now
-        // Just get the tile at the current screen position
-        
-        // Which tile are we rendering? (screen is 32x30 tiles)
-        let tile_x = x / 8;
-        let tile_y = y / 8;
-        let fine_x = x & 0x07;
-        let fine_y = y & 0x07;
-        
-        // For now, just use nametable 0 (0x2000)
-        // TODO: Add proper scrolling support
-        let nametable_addr = 0x2000 + tile_y * 32 + tile_x;
+    fn get_background_pixel(&self, screen_x: u16, screen_y: u16) -> u8 {
+        // Use PPU scroll registers (v and x) to determine actual position in nametable(s)
+        // The v register contains the current VRAM address during rendering:
+        // Bits 0-4:   Coarse X scroll (0-31)
+        // Bits 5-9:   Coarse Y scroll (0-29)
+        // Bits 10-11: Nametable select (0-3)
+        // Bits 12-14: Fine Y scroll (0-7)
+        //
+        // The x register (3 bits) contains the fine X scroll (0-7)
+
+        // Extract scroll position from v register
+        let coarse_x = (self.v & 0x001F) as u16;  // Bits 0-4
+        let coarse_y = ((self.v >> 5) & 0x001F) as u16;  // Bits 5-9
+        let nametable_select = ((self.v >> 10) & 0x0003) as u16;  // Bits 10-11
+        let fine_y_scroll = ((self.v >> 12) & 0x0007) as u16;  // Bits 12-14
+        let fine_x_scroll = self.x as u16;  // Fine X from x register
+
+        // Calculate scrolled position
+        // Add screen position to scroll position
+        let scrolled_x = screen_x + (coarse_x * 8) + fine_x_scroll;
+        let scrolled_y = screen_y + (coarse_y * 8) + fine_y_scroll;
+
+        // Determine which tile we're in
+        let tile_x = (scrolled_x / 8) % 32;  // Wrap at 32 tiles (256 pixels)
+        let tile_y = (scrolled_y / 8) % 30;  // Wrap at 30 tiles (240 pixels)
+        let fine_x = scrolled_x % 8;
+        let fine_y = scrolled_y % 8;
+
+        // Handle nametable wrapping and selection
+        // Each nametable is 32x30 tiles (256x240 pixels)
+        let nt_x_offset = if scrolled_x >= 256 { 1 } else { 0 };
+        let nt_y_offset = if scrolled_y >= 240 { 2 } else { 0 };
+        let effective_nametable = (nametable_select + nt_x_offset + nt_y_offset) % 4;
+
+        // Calculate nametable base address (0x2000, 0x2400, 0x2800, or 0x2C00)
+        let nametable_base = 0x2000 + (effective_nametable * 0x400);
+        let nametable_addr = nametable_base + tile_y * 32 + tile_x;
         let tile_id = self.read_vram(nametable_addr) as u16;
-        
+
         // Get pattern from CHR ROM area
         let pattern_base = if self.ctrl.contains(PpuCtrl::BG_PATTERN) { 0x1000 } else { 0x0000 };
         let pattern_addr = pattern_base + tile_id * 16 + fine_y;
-        
+
         let low_byte = self.vram[(pattern_addr & 0x1FFF) as usize];
         let high_byte = self.vram[((pattern_addr + 8) & 0x1FFF) as usize];
-        
+
         let bit = 7 - fine_x;
         let pixel = ((high_byte >> bit) & 1) << 1 | ((low_byte >> bit) & 1);
-        
+
         if pixel == 0 {
             return 0; // Universal background
         }
-        
+
         // Get attribute for palette selection
         let attr_table_x = tile_x / 4;
         let attr_table_y = tile_y / 4;
-        let attr_base = 0x2000 + 0x3C0;  // Attribute table for nametable 0
+        let attr_base = nametable_base + 0x3C0;  // Attribute table offset
         let attr_addr = attr_base + attr_table_y * 8 + attr_table_x;
         let attr_byte = self.read_vram(attr_addr);
-        
+
         let palette_shift = ((tile_y % 4) / 2) * 4 + ((tile_x % 4) / 2) * 2;
         let palette_index = ((attr_byte >> palette_shift) & 0x03) << 2;
-        
+
         palette_index | pixel
     }
 

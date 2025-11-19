@@ -18,8 +18,10 @@ pub struct Pulse {
     duty: u8,
     volume: u8,
     constant_volume: bool,
+    envelope_loop: bool,
     envelope_period: u8,
-    _envelope_counter: u8,
+    envelope_counter: u8,
+    envelope_divider: u8,
     envelope_start: bool,
     sweep_enabled: bool,
     sweep_period: u8,
@@ -39,8 +41,10 @@ impl Pulse {
             duty: 0,
             volume: 0,
             constant_volume: false,
+            envelope_loop: false,
             envelope_period: 0,
-            _envelope_counter: 0,
+            envelope_counter: 0,
+            envelope_divider: 0,
             envelope_start: false,
             sweep_enabled: false,
             sweep_period: 0,
@@ -76,13 +80,32 @@ impl Pulse {
         ];
 
         let sequence_output = duty_table[self.duty as usize][self.sequence_pos as usize];
-        
+
         if sequence_output == 0 {
             0
         } else if self.constant_volume {
             self.volume
         } else {
-            self._envelope_counter
+            self.envelope_counter
+        }
+    }
+
+    fn clock_envelope(&mut self) {
+        if self.envelope_start {
+            self.envelope_start = false;
+            self.envelope_counter = 15;
+            self.envelope_divider = self.envelope_period;
+        } else {
+            if self.envelope_divider > 0 {
+                self.envelope_divider -= 1;
+            } else {
+                self.envelope_divider = self.envelope_period;
+                if self.envelope_counter > 0 {
+                    self.envelope_counter -= 1;
+                } else if self.envelope_loop {
+                    self.envelope_counter = 15;
+                }
+            }
         }
     }
 }
@@ -142,8 +165,10 @@ pub struct Noise {
     mode: bool,
     volume: u8,
     constant_volume: bool,
+    envelope_loop: bool,
     envelope_period: u8,
-    _envelope_counter: u8,
+    envelope_counter: u8,
+    envelope_divider: u8,
     envelope_start: bool,
     timer_period: u16,
     timer_counter: u16,
@@ -158,8 +183,10 @@ impl Noise {
             mode: false,
             volume: 0,
             constant_volume: false,
+            envelope_loop: false,
             envelope_period: 0,
-            _envelope_counter: 0,
+            envelope_counter: 0,
+            envelope_divider: 0,
             envelope_start: false,
             timer_period: 0,
             timer_counter: 0,
@@ -188,7 +215,26 @@ impl Noise {
         if self.constant_volume {
             self.volume
         } else {
-            self._envelope_counter
+            self.envelope_counter
+        }
+    }
+
+    fn clock_envelope(&mut self) {
+        if self.envelope_start {
+            self.envelope_start = false;
+            self.envelope_counter = 15;
+            self.envelope_divider = self.envelope_period;
+        } else {
+            if self.envelope_divider > 0 {
+                self.envelope_divider -= 1;
+            } else {
+                self.envelope_divider = self.envelope_period;
+                if self.envelope_counter > 0 {
+                    self.envelope_counter -= 1;
+                } else if self.envelope_loop {
+                    self.envelope_counter = 15;
+                }
+            }
         }
     }
 }
@@ -304,6 +350,7 @@ impl Apu {
         match addr {
             0x4000 => {
                 self.pulse1.duty = (value >> 6) & 0x03;
+                self.pulse1.envelope_loop = (value & 0x20) != 0;
                 self.pulse1.constant_volume = (value & 0x10) != 0;
                 self.pulse1.volume = value & 0x0F;
                 self.pulse1.envelope_period = value & 0x0F;
@@ -325,6 +372,7 @@ impl Apu {
             
             0x4004 => {
                 self.pulse2.duty = (value >> 6) & 0x03;
+                self.pulse2.envelope_loop = (value & 0x20) != 0;
                 self.pulse2.constant_volume = (value & 0x10) != 0;
                 self.pulse2.volume = value & 0x0F;
                 self.pulse2.envelope_period = value & 0x0F;
@@ -357,6 +405,7 @@ impl Apu {
             }
             
             0x400C => {
+                self.noise.envelope_loop = (value & 0x20) != 0;
                 self.noise.constant_volume = (value & 0x10) != 0;
                 self.noise.volume = value & 0x0F;
                 self.noise.envelope_period = value & 0x0F;
@@ -471,6 +520,9 @@ impl Apu {
     }
 
     fn clock_envelopes(&mut self) {
+        self.pulse1.clock_envelope();
+        self.pulse2.clock_envelope();
+        self.noise.clock_envelope();
     }
 
     fn clock_linear_counter(&mut self) {
@@ -505,21 +557,24 @@ impl Apu {
         let triangle = self.triangle._get_output() as f32;
         let noise = self.noise._get_output() as f32;
         let dmc = self.dmc._get_output() as f32;
-        
+
         // Mix the channels using the NES non-linear mixing formula
         let pulse_out = if pulse1 + pulse2 > 0.0 {
             95.52 / (8128.0 / (pulse1 + pulse2) + 100.0)
         } else {
             0.0
         };
-        
+
         let tnd_out = if triangle + noise + dmc > 0.0 {
             159.79 / (1.0 / (triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0) + 100.0)
         } else {
             0.0
         };
-        
-        pulse_out + tnd_out
+
+        // Normalize output from 0.0-0.5 range to -1.0 to +1.0 range for SDL2 audio
+        // First multiply by 2 to get 0.0-1.0, then transform to -1.0 to +1.0
+        let output = (pulse_out + tnd_out) * 2.0;
+        output * 2.0 - 1.0
     }
 }
 

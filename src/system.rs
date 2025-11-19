@@ -202,13 +202,38 @@ impl System {
             // Generate audio samples if buffer is provided
             if let Some(buffer) = audio_buffer {
                 self.audio_sample_counter += cpu_cycles as f64;
-                while self.audio_sample_counter >= cycles_per_sample {
+
+                // Check buffer size for synchronization
+                let buffer_len = buffer.lock().unwrap().len();
+
+                // Adjust sample generation based on buffer fill level
+                // If buffer is too full (>6000), skip some samples to prevent overflow
+                // If buffer is too empty (<2000), generate extra samples to prevent underflow
+                let should_generate = if buffer_len > 6000 {
+                    // Buffer getting too full, slow down sample generation
+                    self.audio_sample_counter >= cycles_per_sample * 1.2
+                } else if buffer_len < 2000 {
+                    // Buffer running low, speed up sample generation
+                    self.audio_sample_counter >= cycles_per_sample * 0.8
+                } else {
+                    // Normal operation
+                    self.audio_sample_counter >= cycles_per_sample
+                };
+
+                while should_generate {
                     self.audio_sample_counter -= cycles_per_sample;
                     let sample = self.apu.get_output();
-                    
+
                     let mut audio_buf = buffer.lock().unwrap();
-                    if audio_buf.len() < 8192 {  // Larger buffer to prevent underruns
+                    if audio_buf.len() < 8192 {  // Hard limit to prevent overflow
                         audio_buf.push_back(sample);
+                    }
+
+                    // Re-check condition for next iteration
+                    if !((buffer_len > 6000 && self.audio_sample_counter >= cycles_per_sample * 1.2) ||
+                         (buffer_len < 2000 && self.audio_sample_counter >= cycles_per_sample * 0.8) ||
+                         (buffer_len >= 2000 && buffer_len <= 6000 && self.audio_sample_counter >= cycles_per_sample)) {
+                        break;
                     }
                 }
             }
