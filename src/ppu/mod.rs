@@ -81,7 +81,19 @@ pub struct Ppu {
     t: u16,     // Temporary VRAM address (15 bits)
     x: u8,      // Fine X scroll (3 bits)
     w: bool,    // Write latch
-    
+
+    // Background rendering shift registers
+    bg_shift_pattern_lo: u16,  // Low pattern shift register
+    bg_shift_pattern_hi: u16,  // High pattern shift register
+    bg_shift_attrib_lo: u8,    // Low attribute shift register
+    bg_shift_attrib_hi: u8,    // High attribute shift register
+
+    // Next tile latches (loaded into shift registers every 8 cycles)
+    bg_next_tile_id: u8,       // Next tile ID from nametable
+    bg_next_tile_attrib: u8,   // Next tile attribute
+    bg_next_tile_lsb: u8,      // Next tile pattern low byte
+    bg_next_tile_msb: u8,      // Next tile pattern high byte
+
     // Sprite evaluation data
     secondary_oam: [u8; 32],
     sprite_count: u8,
@@ -115,6 +127,14 @@ impl Ppu {
             t: 0,
             x: 0,
             w: false,
+            bg_shift_pattern_lo: 0,
+            bg_shift_pattern_hi: 0,
+            bg_shift_attrib_lo: 0,
+            bg_shift_attrib_hi: 0,
+            bg_next_tile_id: 0,
+            bg_next_tile_attrib: 0,
+            bg_next_tile_lsb: 0,
+            bg_next_tile_msb: 0,
             secondary_oam: [0xFF; 32],
             sprite_count: 0,
             sprite_zero_in_secondary: false,
@@ -150,6 +170,14 @@ impl Ppu {
         self.t = 0;
         self.x = 0;
         self.w = false;
+        self.bg_shift_pattern_lo = 0;
+        self.bg_shift_pattern_hi = 0;
+        self.bg_shift_attrib_lo = 0;
+        self.bg_shift_attrib_hi = 0;
+        self.bg_next_tile_id = 0;
+        self.bg_next_tile_attrib = 0;
+        self.bg_next_tile_lsb = 0;
+        self.bg_next_tile_msb = 0;
         self.nmi_interrupt = false;
     }
 
@@ -373,27 +401,73 @@ impl Ppu {
                 self.sprite_count = 0;
                 self.sprite_zero_in_secondary = false;
             }
-            
+
             // Sprite evaluation happens during cycles 65-256
             if self.cycle == 65 && self.mask.contains(PpuMask::SHOW_SPRITES) {
                 self.evaluate_sprites();
             }
-            
+
             // Sprite fetching happens during cycles 257-320
             if self.cycle == 257 && self.mask.contains(PpuMask::SHOW_SPRITES) {
                 self.fetch_sprites();
             }
-            
-            // Render when background or sprites are enabled
-            if rendering_enabled && self.cycle >= 1 && self.cycle <= 256 {
-                self.render_pixel();
-            }
-            
-            // Scrolling updates for rendering - simplified for now
+
+            // Background rendering with cycle-accurate tile fetching
             if rendering_enabled {
-                // Basic scrolling support - will improve later
+                // Update shift registers every cycle during rendering
+                if (self.cycle >= 1 && self.cycle <= 256) || (self.cycle >= 321 && self.cycle <= 336) {
+                    self.update_shifters();
+
+                    // 8-cycle tile fetch pipeline
+                    match (self.cycle - 1) % 8 {
+                        0 => {
+                            // Load previous tile data into shift registers
+                            self.load_background_shifters();
+                        }
+                        1 => {
+                            // Fetch nametable byte (tile ID)
+                            self.fetch_nametable_byte();
+                        }
+                        3 => {
+                            // Fetch attribute byte (palette)
+                            self.fetch_attribute_byte();
+                        }
+                        5 => {
+                            // Fetch pattern table low byte
+                            self.fetch_pattern_low();
+                        }
+                        7 => {
+                            // Fetch pattern table high byte
+                            self.fetch_pattern_high();
+
+                            // Increment coarse X after fetching a complete tile
+                            if self.cycle < 256 {
+                                self.increment_x();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Render pixel (output from shift registers)
+                if self.cycle >= 1 && self.cycle <= 256 {
+                    self.render_pixel();
+                }
+
+                // Increment Y at end of visible scanline
+                if self.cycle == 256 {
+                    self.increment_y();
+                }
+
+                // Reset horizontal position at end of scanline
                 if self.cycle == 257 {
-                    self.copy_x();  // Copy horizontal bits from t to v
+                    self.copy_x();
+                }
+            } else {
+                // Even when rendering is disabled, still render pixels if the cycle is in range
+                // This handles the edge case where rendering gets enabled mid-scanline
+                if self.cycle >= 1 && self.cycle <= 256 {
+                    self.render_pixel();
                 }
             }
         } else if self.scanline == 241 && self.cycle == 1 {
@@ -402,19 +476,57 @@ impl Ppu {
                 self.nmi_interrupt = true;
             }
         } else if self.scanline == 261 {
+            // Pre-render scanline (261) - prepares for next frame
             if self.cycle == 1 {
                 self.status.remove(PpuStatus::VBLANK_STARTED);
                 self.status.remove(PpuStatus::SPRITE_ZERO_HIT);
                 self.status.remove(PpuStatus::SPRITE_OVERFLOW);
             }
-            
-            // Pre-render scanline updates - simplified for now
+
+            // Pre-render scanline updates
             if rendering_enabled {
-                if self.cycle >= 280 && self.cycle <= 304 {
-                    self.copy_y();  // Copy vertical bits from t to v
+                // Run the same tile fetching pipeline as visible scanlines
+                // This primes the shift registers for the first scanline
+                if (self.cycle >= 1 && self.cycle <= 256) || (self.cycle >= 321 && self.cycle <= 336) {
+                    self.update_shifters();
+
+                    // 8-cycle tile fetch pipeline
+                    match (self.cycle - 1) % 8 {
+                        0 => {
+                            self.load_background_shifters();
+                        }
+                        1 => {
+                            self.fetch_nametable_byte();
+                        }
+                        3 => {
+                            self.fetch_attribute_byte();
+                        }
+                        5 => {
+                            self.fetch_pattern_low();
+                        }
+                        7 => {
+                            self.fetch_pattern_high();
+                            if self.cycle < 256 {
+                                self.increment_x();
+                            }
+                        }
+                        _ => {}
+                    }
                 }
+
+                // Increment Y at end of scanline
+                if self.cycle == 256 {
+                    self.increment_y();
+                }
+
+                // Reset horizontal position
                 if self.cycle == 257 {
                     self.copy_x();
+                }
+
+                // Copy Y position during vertical blank period (280-304)
+                if self.cycle >= 280 && self.cycle <= 304 {
+                    self.copy_y();
                 }
             }
         }
@@ -538,71 +650,109 @@ impl Ppu {
         // Copy vertical position from t to v
         self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
     }
-    
-    fn get_background_pixel(&self, screen_x: u16, screen_y: u16) -> u8 {
-        // Use PPU scroll registers (v and x) to determine actual position in nametable(s)
-        // The v register contains the current VRAM address during rendering:
-        // Bits 0-4:   Coarse X scroll (0-31)
-        // Bits 5-9:   Coarse Y scroll (0-29)
-        // Bits 10-11: Nametable select (0-3)
-        // Bits 12-14: Fine Y scroll (0-7)
-        //
-        // The x register (3 bits) contains the fine X scroll (0-7)
 
-        // Extract scroll position from v register
-        let coarse_x = (self.v & 0x001F) as u16;  // Bits 0-4
-        let coarse_y = ((self.v >> 5) & 0x001F) as u16;  // Bits 5-9
-        let nametable_select = ((self.v >> 10) & 0x0003) as u16;  // Bits 10-11
-        let fine_y_scroll = ((self.v >> 12) & 0x0007) as u16;  // Bits 12-14
-        let fine_x_scroll = self.x as u16;  // Fine X from x register
+    // Tile fetch pipeline functions
+    fn fetch_nametable_byte(&mut self) {
+        // Fetch tile ID from nametable
+        // Nametable address: 0x2000 | (v & 0x0FFF)
+        let addr = 0x2000 | (self.v & 0x0FFF);
+        self.bg_next_tile_id = self.read_vram(addr);
+    }
 
-        // Calculate scrolled position
-        // Add screen position to scroll position
-        let scrolled_x = screen_x + (coarse_x * 8) + fine_x_scroll;
-        let scrolled_y = screen_y + (coarse_y * 8) + fine_y_scroll;
+    fn fetch_attribute_byte(&mut self) {
+        // Fetch attribute byte from attribute table
+        // Attribute address: 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07)
+        let v = self.v;
+        let addr = 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
+        let attribute = self.read_vram(addr);
 
-        // Determine which tile we're in
-        let tile_x = (scrolled_x / 8) % 32;  // Wrap at 32 tiles (256 pixels)
-        let tile_y = (scrolled_y / 8) % 30;  // Wrap at 30 tiles (240 pixels)
-        let fine_x = scrolled_x % 8;
-        let fine_y = scrolled_y % 8;
+        // Determine which 2 bits of the attribute byte to use
+        // based on the 2x2 tile position within the 4x4 tile group
+        let coarse_x = v & 0x001F;
+        let coarse_y = (v >> 5) & 0x001F;
+        let shift = ((coarse_y & 0x02) << 1) | (coarse_x & 0x02);
 
-        // Handle nametable wrapping and selection
-        // Each nametable is 32x30 tiles (256x240 pixels)
-        let nt_x_offset = if scrolled_x >= 256 { 1 } else { 0 };
-        let nt_y_offset = if scrolled_y >= 240 { 2 } else { 0 };
-        let effective_nametable = (nametable_select + nt_x_offset + nt_y_offset) % 4;
+        // Extract the 2-bit palette value
+        self.bg_next_tile_attrib = (attribute >> shift) & 0x03;
+    }
 
-        // Calculate nametable base address (0x2000, 0x2400, 0x2800, or 0x2C00)
-        let nametable_base = 0x2000 + (effective_nametable * 0x400);
-        let nametable_addr = nametable_base + tile_y * 32 + tile_x;
-        let tile_id = self.read_vram(nametable_addr) as u16;
+    fn fetch_pattern_low(&mut self) {
+        // Fetch low pattern byte from pattern table
+        // Pattern table address: (ctrl.bg_pattern * 0x1000) + (tile_id * 16) + fine_y
+        let pattern_table = if self.ctrl.contains(PpuCtrl::BG_PATTERN) {
+            0x1000
+        } else {
+            0x0000
+        };
+        let fine_y = (self.v >> 12) & 0x07;
+        let addr = pattern_table + (self.bg_next_tile_id as u16 * 16) + fine_y;
+        self.bg_next_tile_lsb = self.read_vram(addr);
+    }
 
-        // Get pattern from CHR ROM area
-        let pattern_base = if self.ctrl.contains(PpuCtrl::BG_PATTERN) { 0x1000 } else { 0x0000 };
-        let pattern_addr = pattern_base + tile_id * 16 + fine_y;
+    fn fetch_pattern_high(&mut self) {
+        // Fetch high pattern byte from pattern table
+        // Pattern table address: (ctrl.bg_pattern * 0x1000) + (tile_id * 16) + fine_y + 8
+        let pattern_table = if self.ctrl.contains(PpuCtrl::BG_PATTERN) {
+            0x1000
+        } else {
+            0x0000
+        };
+        let fine_y = (self.v >> 12) & 0x07;
+        let addr = pattern_table + (self.bg_next_tile_id as u16 * 16) + fine_y + 8;
+        self.bg_next_tile_msb = self.read_vram(addr);
+    }
 
-        let low_byte = self.vram[(pattern_addr & 0x1FFF) as usize];
-        let high_byte = self.vram[((pattern_addr + 8) & 0x1FFF) as usize];
+    // Shifter update functions
+    fn update_shifters(&mut self) {
+        // Shift pattern registers left by 1 bit every cycle
+        // This makes the next pixel available at bit 15
+        if self.mask.contains(PpuMask::SHOW_BG) {
+            self.bg_shift_pattern_lo <<= 1;
+            self.bg_shift_pattern_hi <<= 1;
+            self.bg_shift_attrib_lo <<= 1;
+            self.bg_shift_attrib_hi <<= 1;
+        }
+    }
 
-        let bit = 7 - fine_x;
-        let pixel = ((high_byte >> bit) & 1) << 1 | ((low_byte >> bit) & 1);
+    fn load_background_shifters(&mut self) {
+        // Load the next tile data into the shift registers
+        // This happens every 8 cycles (at the end of each tile fetch)
+        // The low 8 bits of the shift registers are loaded with new data
+        self.bg_shift_pattern_lo = (self.bg_shift_pattern_lo & 0xFF00) | (self.bg_next_tile_lsb as u16);
+        self.bg_shift_pattern_hi = (self.bg_shift_pattern_hi & 0xFF00) | (self.bg_next_tile_msb as u16);
+
+        // Load attribute bits into the low bit of each attribute shifter
+        // The attribute applies to an entire 8-pixel tile
+        self.bg_shift_attrib_lo = (self.bg_shift_attrib_lo & 0xFE) | ((self.bg_next_tile_attrib & 0x01) as u8);
+        self.bg_shift_attrib_hi = (self.bg_shift_attrib_hi & 0xFE) | (((self.bg_next_tile_attrib & 0x02) >> 1) as u8);
+    }
+
+    fn get_background_pixel(&self, _x: u16, _y: u16) -> u8 {
+        // Read pixel from background shift registers
+        // The fine X scroll determines which bit to read (15 - fine_x)
+        // Shift registers hold 16 bits: the current tile (bits 15-8) and next tile (bits 7-0)
+
+        // Calculate which bit to read based on fine X scroll
+        // Bit 15 is the leftmost pixel, bit 0 is the rightmost
+        let bit_mux = 15 - self.x;
+
+        // Extract the pattern bits from the shift registers
+        let pixel_lo = ((self.bg_shift_pattern_lo >> bit_mux) & 0x01) as u8;
+        let pixel_hi = ((self.bg_shift_pattern_hi >> bit_mux) & 0x01) as u8;
+        let pixel = (pixel_hi << 1) | pixel_lo;
 
         if pixel == 0 {
-            return 0; // Universal background
+            return 0; // Transparent
         }
 
-        // Get attribute for palette selection
-        let attr_table_x = tile_x / 4;
-        let attr_table_y = tile_y / 4;
-        let attr_base = nametable_base + 0x3C0;  // Attribute table offset
-        let attr_addr = attr_base + attr_table_y * 8 + attr_table_x;
-        let attr_byte = self.read_vram(attr_addr);
+        // Extract the palette bits from the attribute shift registers
+        // Attribute shifters work the same way - bit 7 corresponds to current pixel
+        let palette_lo = ((self.bg_shift_attrib_lo >> 7) & 0x01) as u8;
+        let palette_hi = ((self.bg_shift_attrib_hi >> 7) & 0x01) as u8;
+        let palette = (palette_hi << 1) | palette_lo;
 
-        let palette_shift = ((tile_y % 4) / 2) * 4 + ((tile_x % 4) / 2) * 2;
-        let palette_index = ((attr_byte >> palette_shift) & 0x03) << 2;
-
-        palette_index | pixel
+        // Combine palette and pixel to get final color index
+        (palette << 2) | pixel
     }
 
     fn get_color_from_palette(&self, index: u8) -> (u8, u8, u8) {
