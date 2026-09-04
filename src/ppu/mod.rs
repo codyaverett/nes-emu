@@ -85,8 +85,8 @@ pub struct Ppu {
     // Background rendering shift registers
     bg_shift_pattern_lo: u16,  // Low pattern shift register
     bg_shift_pattern_hi: u16,  // High pattern shift register
-    bg_shift_attrib_lo: u8,    // Low attribute shift register
-    bg_shift_attrib_hi: u8,    // High attribute shift register
+    bg_shift_attrib_lo: u16,   // Low attribute shift register (16-bit like pattern shifters)
+    bg_shift_attrib_hi: u16,   // High attribute shift register (16-bit like pattern shifters)
 
     // Next tile latches (loaded into shift registers every 8 cycles)
     bg_next_tile_id: u8,       // Next tile ID from nametable
@@ -721,10 +721,13 @@ impl Ppu {
         self.bg_shift_pattern_lo = (self.bg_shift_pattern_lo & 0xFF00) | (self.bg_next_tile_lsb as u16);
         self.bg_shift_pattern_hi = (self.bg_shift_pattern_hi & 0xFF00) | (self.bg_next_tile_msb as u16);
 
-        // Load attribute bits into the low bit of each attribute shifter
-        // The attribute applies to an entire 8-pixel tile
-        self.bg_shift_attrib_lo = (self.bg_shift_attrib_lo & 0xFE) | ((self.bg_next_tile_attrib & 0x01) as u8);
-        self.bg_shift_attrib_hi = (self.bg_shift_attrib_hi & 0xFE) | (((self.bg_next_tile_attrib & 0x02) >> 1) as u8);
+        // Load attribute bits into each attribute shifter (16-bit registers)
+        // The attribute applies to an entire 8-pixel tile, so we fill the low 8 bits
+        // with the same palette value (0x00 or 0xFF) while preserving the high 8 bits
+        self.bg_shift_attrib_lo = (self.bg_shift_attrib_lo & 0xFF00) |
+            if (self.bg_next_tile_attrib & 0x01) != 0 { 0xFF } else { 0x00 };
+        self.bg_shift_attrib_hi = (self.bg_shift_attrib_hi & 0xFF00) |
+            if (self.bg_next_tile_attrib & 0x02) != 0 { 0xFF } else { 0x00 };
     }
 
     fn get_background_pixel(&self, _x: u16, _y: u16) -> u8 {
@@ -746,9 +749,9 @@ impl Ppu {
         }
 
         // Extract the palette bits from the attribute shift registers
-        // Attribute shifters work the same way - bit 7 corresponds to current pixel
-        let palette_lo = ((self.bg_shift_attrib_lo >> 7) & 0x01) as u8;
-        let palette_hi = ((self.bg_shift_attrib_hi >> 7) & 0x01) as u8;
+        // Attribute shifters work the same way as pattern shifters - read from bit_mux position
+        let palette_lo = ((self.bg_shift_attrib_lo >> bit_mux) & 0x01) as u8;
+        let palette_hi = ((self.bg_shift_attrib_hi >> bit_mux) & 0x01) as u8;
         let palette = (palette_hi << 1) | palette_lo;
 
         // Combine palette and pixel to get final color index
