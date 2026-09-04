@@ -79,6 +79,14 @@
 
 ## Diagnostic Tools
 
+> **Removed 2026-09-04.** The `rom-debug`, `test-render` and `ppu-debug`
+> helper binaries in `src/bin/` stopped compiling after the PPU cycle-accurate
+> refactor (they referenced `Cartridge::chr_ram`, `Cartridge::read_chr`,
+> `Ppu::save_frame_to_ppm` and other removed APIs) and were deleted. Their
+> role is being replaced by the headless test-ROM harness in
+> `docs/plans/ACCURACY_ROADMAP.md` Phase 1 (GitHub issue #1). The sections
+> below are kept for historical reference only.
+
 ### Tool 1: ROM Inspector (`rom-debug`)
 
 **Purpose**: Inspect ROM file structure and data
