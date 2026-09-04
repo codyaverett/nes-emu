@@ -38,6 +38,10 @@ impl Mapper65 {
 
 impl Mapper for Mapper65 {
     fn cpu_read(&mut self, addr: u16) -> u8 {
+        self.cpu_peek(addr)
+    }
+
+    fn cpu_peek(&self, addr: u16) -> u8 {
         match addr {
             0x6000..=0x7FFF => self.prg_ram[(addr - 0x6000) as usize],
             0x8000..=0xDFFF => {

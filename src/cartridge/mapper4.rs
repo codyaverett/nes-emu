@@ -135,6 +135,10 @@ impl Mapper4 {
 
 impl Mapper for Mapper4 {
     fn cpu_read(&mut self, addr: u16) -> u8 {
+        self.cpu_peek(addr)
+    }
+
+    fn cpu_peek(&self, addr: u16) -> u8 {
         match addr {
             0x6000..=0x7FFF => {
                 if self.prg_ram_enabled {

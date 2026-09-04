@@ -2704,16 +2704,8 @@ impl System {
     pub fn peek(&self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize],
-            0x6000..=0x7FFF => match self.cartridge {
-                Some(ref cart) => cart
-                    .prg_ram
-                    .get((addr - 0x6000) as usize)
-                    .copied()
-                    .unwrap_or(0),
-                None => 0,
-            },
-            0x8000..=0xFFFF => match self.cartridge {
-                Some(ref cart) => cart.read_prg(addr - 0x8000),
+            0x6000..=0xFFFF => match self.cartridge {
+                Some(ref cart) => cart.mapper.cpu_peek(addr),
                 None => 0,
             },
             _ => 0,
@@ -2734,9 +2726,7 @@ impl System {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize] = value,
             0x6000..=0x7FFF => {
                 if let Some(ref mut cart) = self.cartridge {
-                    if let Some(slot) = cart.prg_ram.get_mut((addr - 0x6000) as usize) {
-                        *slot = value;
-                    }
+                    cart.mapper.cpu_write(addr, value);
                 }
             }
             _ => {}

@@ -35,12 +35,12 @@ pub fn load_rom(rel: &str) -> System {
 /// tile indices, so the on-screen console can be read back verbatim.
 /// Non-printable tiles become spaces; trailing blank lines are dropped.
 pub fn screen_text(system: &System) -> String {
-    let vram = &system.ppu.vram;
+    let nametable = &system.ppu.nametable_ram;
     let mut lines: Vec<String> = Vec::new();
     for row in 0..30 {
         let mut line = String::with_capacity(32);
         for col in 0..32 {
-            let tile = vram[0x2000 + row * 32 + col];
+            let tile = nametable[row * 32 + col];
             let ch = if (0x20..0x7F).contains(&tile) {
                 tile as char
             } else {

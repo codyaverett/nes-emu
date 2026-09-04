@@ -268,6 +268,15 @@ impl Mapper for Mapper5 {
         }
     }
 
+    fn cpu_peek(&self, addr: u16) -> u8 {
+        match addr {
+            // $5000-$5FFF registers have read side effects; never peek them.
+            0x6000..=0x7FFF => self.prg_ram[(addr - 0x6000) as usize],
+            0x8000..=0xFFFF => self.read_prg(addr - 0x8000),
+            _ => 0,
+        }
+    }
+
     fn cpu_write(&mut self, addr: u16, value: u8) {
         match addr {
             0x5000..=0x5FFF => self.write_register(addr, value),

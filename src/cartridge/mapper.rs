@@ -16,6 +16,11 @@ pub trait Mapper: Send {
     /// CPU bus write for $4020-$FFFF.
     fn cpu_write(&mut self, addr: u16, value: u8);
 
+    /// Side-effect-free CPU read used by debuggers and the test harness.
+    /// Must return the same bytes as `cpu_read` for PRG RAM and PRG ROM,
+    /// but must not touch mapper registers that change state when read.
+    fn cpu_peek(&self, addr: u16) -> u8;
+
     /// PPU bus read for $0000-$1FFF (pattern tables, CHR ROM or CHR RAM).
     fn ppu_read(&mut self, addr: u16) -> u8;
 
@@ -48,6 +53,10 @@ impl Mapper for NullMapper {
     }
 
     fn cpu_write(&mut self, _addr: u16, _value: u8) {}
+
+    fn cpu_peek(&self, _addr: u16) -> u8 {
+        0
+    }
 
     fn ppu_read(&mut self, _addr: u16) -> u8 {
         0
