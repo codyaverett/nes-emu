@@ -1,6 +1,57 @@
 # Changelog
 
-All notable changes to the NES Emulator PPU will be documented in this file.
+All notable changes to the NES emulator will be documented in this file.
+
+## [0.3.0] - 2026-09-04
+
+Accuracy wave 1. Plan: docs/plans/ACCURACY_ROADMAP.md. Closes issues 1 and 2,
+lands the CPU and APU half of issue 3.
+
+### Added
+- Headless test ROM harness under tests/ with nestest and the blargg suites in
+  test-roms/ (issue 1). 22 blargg tests and 3 nestest tests pass; the rest are
+  ignored with their observed failure and un-ignored as later phases fix them.
+  See docs/testing/TEST_ROM_HARNESS.md.
+- Side-effect-free debug API on System: peek, poke, register accessors,
+  step_instruction, trace_line in Nintendulator format.
+- Mapper trait with one file per mapper: NROM, MMC1, UxROM, CNROM, MMC3, MMC5
+  and mapper 65 (issue 2). The previously dead mapper4.rs is now the live MMC3.
+- CPU IRQ line: level-triggered IRQ from APU frame counter, DMC and a mapper
+  input, edge-triggered NMI, polled at each instruction boundary.
+- APU frame counter IRQ, 4017 sequencer reset, DMC sample playback and DMC IRQ.
+- Unit tests for mapper bank arithmetic, MMC3 counter, interrupt polling and
+  APU IRQ behaviour.
+
+### Fixed
+- CHR bank switching now reaches the PPU. Pattern table fetches go through the
+  mapper on every access instead of a one-time copy at load. TMNT and Contra
+  render correctly; SMB3 shows its opening curtain (status bar needs the MMC3
+  IRQ, tracked in issue 3).
+- Mirroring follows the mapper control register per access (MMC1, MMC3).
+- BRK no longer sets the B flag in the live status register.
+- APU is stepped once per CPU cycle instead of once per instruction, so the
+  frame counter runs at the correct rate.
+- PPU attribute shifters widened to 16 bits so palette selection survives
+  shifting; fixes wrong background colours.
+- Audio sample loop no longer stalls on buffer feedback.
+- Mapper 65 CHR registers moved to the correct addresses; PRG bank reads wrap
+  to ROM size; MMC3 reads in E000-FFFF work.
+
+### Removed
+- ppu_debug, rom_debug and test_render helper binaries, which no longer
+  compiled after the PPU refactor.
+
+### Known issues
+- Opcode B4 (LDY zp,X) has no implementation; it blocks nestest past line
+  3640, instr_test-v5 05 and cpu_timing_test6.
+- MMC3 scanline IRQ is not yet clocked from the PPU (issue 3 follow-up).
+- Zelda renders but never writes its palette; cause not yet found.
+
+### Notes
+- Version jumps from 0.1.0 in Cargo.toml to 0.3.0 because this changelog
+  already recorded a 0.2.1 entry that was never reflected in Cargo.toml.
+
+---
 
 ## [Unreleased] - 2025-01-15
 

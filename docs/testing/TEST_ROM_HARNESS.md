@@ -132,12 +132,12 @@ and `9E SXA abs,Y` (unofficial SHY/SHX) as wrong.
 | ppu_open_bus | 0 | 1 | #2 write should set decay value |
 | sprite_hit_tests_2005.10.05 (11) | 0 | 11 | 01 #7, 02 #2, 03 #2, 04 #2, 05 #4, 06 #3, 07 #6, 08 #3; 09/10/11 hang |
 | sprite_overflow_tests (5) | 1 | 4 | 1 #7, 2 #9, 4 #7, 3 hangs; 5.Emulator passes |
-| apu_test (8 + 1) | 0 | 9 | 1 #4, 2 length table, 3 #4 IRQ flag, 4 #4 jitter, 5 #3, 6 #2, 7 #2 DMC, 8 #2; combined fails in test 1 |
+| apu_test (8 + 1) | 5 | 4 | 2, 3, 4, 7, 8 pass since the IRQ line landed (Phase 3); 1 #4, 5 #3, 6 #2 remain; combined fails in test 1 |
 | apu_reset (6) | 1 | 5 | 4015_cleared #2, 4017_timing #3, 4017_written #2, len_ctrs_enabled #3, works_immediately #2; irq_flag_cleared passes |
 | oam_read | 1 | 0 | |
 | oam_stress | 0 | 1 | every 4th OAM byte reads back wrong |
 | mmc3_test_2 (6) | 0 | 6 | IRQ counter never clocked: 1 #3, 2 #2, 3 #4, 5 #2, 6 #2; 4 hangs |
-| **Total blargg** | **17** | **59** | |
+| **Total blargg** | **22** | **54** | |
 
 Combined with nestest: 20 tests pass, 62 are ignored.
 
@@ -146,8 +146,8 @@ Combined with nestest: 20 tests pass, 62 are ignored.
 | Phase | Suites expected to flip to pass |
 |-------|---------------------------------|
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
-| Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, mmc3_test_2 1/2/4/5/6, apu_test 3, apu_reset |
-| Phase 4 (bus-tick timing) | nestest CYC, cpu_timing_test6, ppu_vbl_nmi, apu_test 1/2/4/5/6/8 |
+| Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, mmc3_test_2 1/2/4/5/6, apu_reset (CPU/APU half landed: apu_test 2/3/4/7/8 now pass) |
+| Phase 4 (bus-tick timing) | nestest CYC, cpu_timing_test6, ppu_vbl_nmi, apu_test 1/5/6 |
 | Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 3 |
 
 ## Debug API reference (`src/system.rs`)

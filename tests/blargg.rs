@@ -419,20 +419,17 @@ blargg_test!(
 blargg_test!(
     apu_test_2_len_table,
     "apu_test/rom_singles/2-len_table.nes",
-    SHORT,
-    ignore = "fails on channel 0 length table; Phase 3/4"
+    SHORT
 );
 blargg_test!(
     apu_test_3_irq_flag,
     "apu_test/rom_singles/3-irq_flag.nes",
-    SHORT,
-    ignore = "#4 Flag should be set in $4017 mode $00; Phase 3"
+    SHORT
 );
 blargg_test!(
     apu_test_4_jitter,
     "apu_test/rom_singles/4-jitter.nes",
-    SHORT,
-    ignore = "#4 Even jitter not handled properly; Phase 4"
+    SHORT
 );
 blargg_test!(
     apu_test_5_len_timing,
@@ -449,14 +446,12 @@ blargg_test!(
 blargg_test!(
     apu_test_7_dmc_basics,
     "apu_test/rom_singles/7-dmc_basics.nes",
-    SHORT,
-    ignore = "#2 DMC isn't working well enough to test further; Phase 3/4"
+    SHORT
 );
 blargg_test!(
     apu_test_8_dmc_rates,
     "apu_test/rom_singles/8-dmc_rates.nes",
-    SHORT,
-    ignore = "#2 Rate 0's period is too short; Phase 4"
+    SHORT
 );
 blargg_test!(
     apu_test_all,
