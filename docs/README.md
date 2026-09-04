@@ -9,6 +9,7 @@ Contains debugging session notes and references:
 - `BUGFIX_SUMMARY_2025-01-15.md` - Summary of bug fixes from January 15, 2025
 - `DEBUGGING_SESSION_2025-01-15.md` - Detailed debugging session notes
 - `DEBUG_REFERENCE.md` - Reference guide for debugging the emulator
+- `INTERRUPT_LINE.md` - CPU NMI edge / IRQ level polling and APU frame/DMC IRQ sources (#3)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:

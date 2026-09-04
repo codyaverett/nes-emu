@@ -5,6 +5,12 @@ use crate::ppu::Ppu;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+// Interrupt tests live in src/system/tests.rs (a child module, so they can
+// reach the private CPU registers). Declared here rather than appended at the
+// end of the file to keep the tail of `impl System` free for other work.
+#[cfg(test)]
+mod tests;
+
 pub struct System {
     cpu_ram: [u8; 0x800],
     cpu_a: u8,
@@ -25,6 +31,13 @@ pub struct System {
     /// `set_total_cpu_cycles` call. Unlike `cycles` (a per-frame budget)
     /// this never resets; it feeds the nestest-style trace CYC column.
     total_cycles: u64,
+    /// Latched rising edge of the PPU NMI output. NMI is edge-triggered: the
+    /// edge is captured here and serviced exactly once by `poll_interrupts`.
+    nmi_pending: bool,
+    /// Mapper contribution to the IRQ line (level). Always false for now; the
+    /// MMC3 lane will set this from the mapper's scanline counter (see
+    /// docs/debugging/INTERRUPT_LINE.md, follow-up section).
+    pub mapper_irq: bool,
 }
 
 impl Default for System {
@@ -52,6 +65,8 @@ impl System {
             oam_dma_cycles: 0,
             audio_sample_counter: 0.0,
             total_cycles: 0,
+            nmi_pending: false,
+            mapper_irq: false,
         }
     }
 
@@ -61,6 +76,8 @@ impl System {
         self.cpu_y = 0;
         self.cpu_sp = 0xFD;
         self.cpu_status = 0x24;
+        self.nmi_pending = false;
+        self.mapper_irq = false;
         self.ppu.reset();
         self.apu.reset();
         self.controller1.reset();
@@ -210,13 +227,22 @@ impl System {
                 }
             }
 
-            // Handle NMI
-            if self.ppu.nmi_interrupt {
-                self.ppu.nmi_interrupt = false;
-                self.nmi();
+            // Interrupts (NMI edge, IRQ level) are polled inside `cpu_step`
+            // before each opcode fetch; see `poll_interrupts`.
+
+            // The APU runs at the CPU clock: one step per CPU cycle so the
+            // frame sequencer (and therefore the frame IRQ) runs at ~240 Hz
+            // rather than once per 7457 instructions.
+            for _ in 0..cpu_cycles {
+                self.apu.step();
             }
 
-            self.apu.step();
+            // DMC memory reader: the APU asks for a byte, the bus fetches it.
+            // The 4-cycle CPU stall the DMA causes is not modelled yet.
+            if let Some(addr) = self.apu.dmc_fetch_address() {
+                let byte = self.read_byte(addr);
+                self.apu.dmc_supply_sample(byte);
+            }
 
             // Generate audio samples if buffer is provided
             if let Some(buffer) = audio_buffer {
@@ -254,6 +280,19 @@ impl System {
         if self.oam_dma_cycles > 0 {
             let cycles = self.oam_dma_cycles.min(4) as u8;
             self.oam_dma_cycles -= cycles as u16;
+            return cycles;
+        }
+
+        // Interrupt polling happens here, at the boundary between the previous
+        // instruction and the next opcode fetch. The run loop ticks the PPU
+        // and APU after `cpu_step` returns, so "end of instruction N" is only
+        // observable at the start of `cpu_step` N+1; polling at the bottom of
+        // this function would see pre-tick state and land every interrupt one
+        // instruction late. Placing it after the OAM DMA early-return also
+        // means interrupts wait out a DMA stall. When Phase 4 moves the
+        // PPU/APU ticks inside the instruction, this spot still sees fully
+        // ticked state, so it survives the bus-tick refactor.
+        if let Some(cycles) = self.poll_interrupts() {
             return cycles;
         }
 
@@ -500,8 +539,11 @@ impl System {
                 }
             }
             0x00 => {
-                // BRK
-                self.cpu_status |= 0x10;
+                // BRK: shares the $FFFE vector with IRQ but pushes P with the
+                // B flag (bit 4) set so the handler can tell them apart. B is
+                // only ever a property of the pushed copy; it is never set in
+                // the live status register (that would leak into the P pushed
+                // by an NMI arriving inside the BRK handler).
                 self.push_word(self.cpu_pc.wrapping_add(1));
                 self.push(self.cpu_status | 0x30);
                 self.cpu_status |= 0x04;
@@ -2602,11 +2644,55 @@ impl System {
         self.ppu.step();
     }
 
+    /// Poll the interrupt inputs at an instruction boundary and service one
+    /// if due. Returns the cycles consumed (7) when an interrupt sequence ran.
+    ///
+    /// NMI is edge-triggered: the PPU raises `nmi_interrupt` exactly once per
+    /// rising edge of its NMI output (vblank start with NMI enabled, or NMI
+    /// enabled during vblank) and we consume that latch here, so each edge is
+    /// serviced once no matter how long the output stays high.
+    ///
+    /// IRQ is level-triggered: the line is the OR of every IRQ source and is
+    /// serviced whenever it is high and the I flag is clear. The sources hold
+    /// their flags until acknowledged, so a handler that never clears its
+    /// source is re-entered as soon as it executes RTI, as on hardware.
+    ///
+    /// NMI has priority over IRQ.
+    fn poll_interrupts(&mut self) -> Option<u8> {
+        if self.ppu.nmi_interrupt {
+            self.ppu.nmi_interrupt = false;
+            self.nmi_pending = true;
+        }
+
+        if self.nmi_pending {
+            self.nmi_pending = false;
+            self.nmi();
+            return Some(7);
+        }
+
+        let irq_line = self.apu.irq_pending() || self.mapper_irq;
+        if irq_line && (self.cpu_status & 0x04) == 0 {
+            self.irq();
+            return Some(7);
+        }
+
+        None
+    }
+
     fn nmi(&mut self) {
         self.push_word(self.cpu_pc);
-        self.push(self.cpu_status | 0x20);
+        // Hardware interrupts push P with B (bit 4) clear and bit 5 set.
+        self.push((self.cpu_status & !0x10) | 0x20);
         self.cpu_status |= 0x04; // Set interrupt disable
         self.cpu_pc = self.read_word(0xFFFA);
+    }
+
+    fn irq(&mut self) {
+        self.push_word(self.cpu_pc);
+        // Same vector as BRK, but B is clear so the handler can distinguish.
+        self.push((self.cpu_status & !0x10) | 0x20);
+        self.cpu_status |= 0x04; // Set interrupt disable
+        self.cpu_pc = self.read_word(0xFFFE);
     }
 
     // ------------------------------------------------------------------
@@ -2739,9 +2825,9 @@ impl System {
     /// A pending OAM DMA stall (left over from a previous step or frame) is
     /// drained first, then one instruction runs, then any stall that
     /// instruction itself started (a `$4014` write) is drained too. All of
-    /// those cycles are included in the return value. NMI is polled after
-    /// each step exactly as in `run_frame`, so instruction-stepped code
-    /// still sees vblank NMIs.
+    /// those cycles are included in the return value. NMI and IRQ are polled
+    /// inside `cpu_step` exactly as in `run_frame`, so instruction-stepped
+    /// code still sees vblank NMIs and APU/mapper IRQs.
     pub fn step_instruction(&mut self) -> u32 {
         let mut total: u32 = 0;
         let mut instruction_done = false;
@@ -2757,12 +2843,15 @@ impl System {
                 self.ppu_step();
             }
 
-            if self.ppu.nmi_interrupt {
-                self.ppu.nmi_interrupt = false;
-                self.nmi();
+            // Interrupts are polled inside `cpu_step` (see `poll_interrupts`).
+            // APU runs one step per CPU cycle, exactly as `run_frame` does.
+            for _ in 0..cpu_cycles {
+                self.apu.step();
             }
-
-            self.apu.step();
+            if let Some(addr) = self.apu.dmc_fetch_address() {
+                let byte = self.read_byte(addr);
+                self.apu.dmc_supply_sample(byte);
+            }
 
             instruction_done |= is_instruction;
             if instruction_done && self.oam_dma_cycles == 0 {
