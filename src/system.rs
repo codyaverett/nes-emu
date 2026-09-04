@@ -21,6 +21,10 @@ pub struct System {
     cycles: u64,
     oam_dma_cycles: u16,
     audio_sample_counter: f64,
+    /// Total CPU cycles executed since power-on or the last
+    /// `set_total_cpu_cycles` call. Unlike `cycles` (a per-frame budget)
+    /// this never resets; it feeds the nestest-style trace CYC column.
+    total_cycles: u64,
 }
 
 impl Default for System {
@@ -47,6 +51,7 @@ impl System {
             cycles: 0,
             oam_dma_cycles: 0,
             audio_sample_counter: 0.0,
+            total_cycles: 0,
         }
     }
 
@@ -193,6 +198,7 @@ impl System {
         while self.cycles < target_cycles {
             // CPU runs at 1/3 the speed of PPU
             let cpu_cycles = self.cpu_step();
+            self.total_cycles += cpu_cycles as u64;
 
             // PPU runs 3 times per CPU cycle
             for _ in 0..(cpu_cycles * 3) {
@@ -2602,4 +2608,373 @@ impl System {
         self.cpu_status |= 0x04; // Set interrupt disable
         self.cpu_pc = self.read_word(0xFFFA);
     }
+
+    // ------------------------------------------------------------------
+    // Headless test / trace support.
+    //
+    // Everything below is used by the integration harness in `tests/`
+    // (see docs/testing/TEST_ROM_HARNESS.md). None of it is used by the
+    // main emulation loop.
+    // ------------------------------------------------------------------
+
+    /// Read a byte without side effects.
+    ///
+    /// Covers CPU RAM ($0000-$1FFF, mirrored), cartridge PRG RAM
+    /// ($6000-$7FFF) and PRG ROM ($8000-$FFFF). PPU/APU/controller
+    /// registers ($2000-$5FFF) have read side effects (for example a $2002
+    /// read clears the vblank flag) and are deliberately NOT touched;
+    /// peeking that range returns 0.
+    pub fn peek(&self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize],
+            0x6000..=0x7FFF => match self.cartridge {
+                Some(ref cart) => cart
+                    .prg_ram
+                    .get((addr - 0x6000) as usize)
+                    .copied()
+                    .unwrap_or(0),
+                None => 0,
+            },
+            0x8000..=0xFFFF => match self.cartridge {
+                Some(ref cart) => cart.read_prg(addr - 0x8000),
+                None => 0,
+            },
+            _ => 0,
+        }
+    }
+
+    /// Side-effect-free little-endian 16-bit read built on `peek`.
+    pub fn peek_word(&self, addr: u16) -> u16 {
+        let lo = self.peek(addr) as u16;
+        let hi = self.peek(addr.wrapping_add(1)) as u16;
+        (hi << 8) | lo
+    }
+
+    /// Write a byte into CPU RAM ($0000-$1FFF) or PRG RAM ($6000-$7FFF)
+    /// without touching any memory-mapped register. Other ranges ignored.
+    pub fn poke(&mut self, addr: u16, value: u8) {
+        match addr {
+            0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize] = value,
+            0x6000..=0x7FFF => {
+                if let Some(ref mut cart) = self.cartridge {
+                    if let Some(slot) = cart.prg_ram.get_mut((addr - 0x6000) as usize) {
+                        *slot = value;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn pc(&self) -> u16 {
+        self.cpu_pc
+    }
+
+    pub fn set_pc(&mut self, pc: u16) {
+        self.cpu_pc = pc;
+    }
+
+    pub fn reg_a(&self) -> u8 {
+        self.cpu_a
+    }
+
+    pub fn reg_x(&self) -> u8 {
+        self.cpu_x
+    }
+
+    pub fn reg_y(&self) -> u8 {
+        self.cpu_y
+    }
+
+    pub fn reg_sp(&self) -> u8 {
+        self.cpu_sp
+    }
+
+    pub fn reg_p(&self) -> u8 {
+        self.cpu_status
+    }
+
+    pub fn set_reg_a(&mut self, value: u8) {
+        self.cpu_a = value;
+    }
+
+    pub fn set_reg_x(&mut self, value: u8) {
+        self.cpu_x = value;
+    }
+
+    pub fn set_reg_y(&mut self, value: u8) {
+        self.cpu_y = value;
+    }
+
+    pub fn set_reg_sp(&mut self, value: u8) {
+        self.cpu_sp = value;
+    }
+
+    pub fn set_reg_p(&mut self, value: u8) {
+        self.cpu_status = value;
+    }
+
+    /// Total CPU cycles executed so far (never reset by frame boundaries).
+    pub fn total_cpu_cycles(&self) -> u64 {
+        self.total_cycles
+    }
+
+    /// Override the running cycle count. nestest's golden log starts at
+    /// CYC:7 (the cycles a real reset sequence takes), so the harness sets
+    /// this before stepping.
+    pub fn set_total_cpu_cycles(&mut self, cycles: u64) {
+        self.total_cycles = cycles;
+    }
+
+    /// True while an OAM DMA started by a $4014 write is still stalling
+    /// the CPU.
+    pub fn oam_dma_pending(&self) -> bool {
+        self.oam_dma_cycles > 0
+    }
+
+    /// Execute exactly one CPU instruction plus the PPU and APU catch-up
+    /// that `run_frame` would perform for it, and return the CPU cycles
+    /// consumed.
+    ///
+    /// A pending OAM DMA stall (left over from a previous step or frame) is
+    /// drained first, then one instruction runs, then any stall that
+    /// instruction itself started (a `$4014` write) is drained too. All of
+    /// those cycles are included in the return value. NMI is polled after
+    /// each step exactly as in `run_frame`, so instruction-stepped code
+    /// still sees vblank NMIs.
+    pub fn step_instruction(&mut self) -> u32 {
+        let mut total: u32 = 0;
+        let mut instruction_done = false;
+        loop {
+            // cpu_step returns DMA stall chunks instead of fetching an
+            // opcode while oam_dma_cycles is non-zero.
+            let is_instruction = self.oam_dma_cycles == 0;
+            let cpu_cycles = self.cpu_step();
+            total += cpu_cycles as u32;
+            self.total_cycles += cpu_cycles as u64;
+
+            for _ in 0..(cpu_cycles as u32 * 3) {
+                self.ppu_step();
+            }
+
+            if self.ppu.nmi_interrupt {
+                self.ppu.nmi_interrupt = false;
+                self.nmi();
+            }
+
+            self.apu.step();
+
+            instruction_done |= is_instruction;
+            if instruction_done && self.oam_dma_cycles == 0 {
+                break;
+            }
+        }
+        total
+    }
+
+    /// Length in bytes of the instruction at `addr`, derived from its
+    /// addressing mode. Covers all 256 opcodes including unofficial ones.
+    pub fn instruction_length(&self, addr: u16) -> u16 {
+        let (_, mode, _) = OPCODE_TABLE[self.peek(addr) as usize];
+        mode.length()
+    }
+
+    /// Produce a Nintendulator-format trace line for the instruction at the
+    /// current PC without executing it, for example:
+    ///
+    /// `C000  4C F5 C5  JMP $C5F5                       A:00 X:00 Y:00 P:24 SP:FD PPU:  0, 21 CYC:7`
+    ///
+    /// Register and CYC columns match nestest.log exactly. The disassembly
+    /// column is best-effort: mnemonic and operand are printed, but the
+    /// "= value" annotations Nintendulator adds for memory operands are
+    /// omitted, so compare parsed fields rather than whole lines.
+    pub fn trace_line(&self) -> String {
+        let pc = self.cpu_pc;
+        let opcode = self.peek(pc);
+        let (mnemonic, mode, unofficial) = OPCODE_TABLE[opcode as usize];
+        let len = mode.length();
+
+        let mut bytes = String::new();
+        for i in 0..3u16 {
+            if i < len {
+                bytes.push_str(&format!("{:02X} ", self.peek(pc.wrapping_add(i))));
+            } else {
+                bytes.push_str("   ");
+            }
+        }
+
+        let b1 = self.peek(pc.wrapping_add(1));
+        let b2 = self.peek(pc.wrapping_add(2));
+        let abs = ((b2 as u16) << 8) | b1 as u16;
+        let operand = match mode {
+            AddrMode::Imp => String::new(),
+            AddrMode::Acc => "A".to_string(),
+            AddrMode::Imm => format!("#${:02X}", b1),
+            AddrMode::Zp => format!("${:02X}", b1),
+            AddrMode::Zpx => format!("${:02X},X", b1),
+            AddrMode::Zpy => format!("${:02X},Y", b1),
+            AddrMode::Abs => format!("${:04X}", abs),
+            AddrMode::Abx => format!("${:04X},X", abs),
+            AddrMode::Aby => format!("${:04X},Y", abs),
+            AddrMode::Ind => format!("(${:04X})", abs),
+            AddrMode::Izx => format!("(${:02X},X)", b1),
+            AddrMode::Izy => format!("(${:02X}),Y", b1),
+            AddrMode::Rel => {
+                let target = pc.wrapping_add(2).wrapping_add(b1 as i8 as i16 as u16);
+                format!("${:04X}", target)
+            }
+        };
+        let marker = if unofficial { '*' } else { ' ' };
+        let asm = if operand.is_empty() {
+            mnemonic.to_string()
+        } else {
+            format!("{} {}", mnemonic, operand)
+        };
+
+        format!(
+            "{:04X}  {}{}{:<32}A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} PPU:{:3},{:3} CYC:{}",
+            pc,
+            bytes,
+            marker,
+            asm,
+            self.cpu_a,
+            self.cpu_x,
+            self.cpu_y,
+            self.cpu_status,
+            self.cpu_sp,
+            self.ppu.scanline,
+            self.ppu.cycle,
+            self.total_cycles
+        )
+    }
+}
+
+pub use trace_tables::AddrMode;
+use trace_tables::OPCODE_TABLE;
+
+/// Opcode metadata for `System::trace_line` and
+/// `System::instruction_length`. Kept in its own module so the glob import
+/// of the mode names does not leak into the rest of the file.
+mod trace_tables {
+    /// 6502 addressing modes, used only for trace output and instruction
+    /// length lookup. The CPU core itself decodes inline in `cpu_step`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum AddrMode {
+        Imp,
+        Acc,
+        Imm,
+        Zp,
+        Zpx,
+        Zpy,
+        Abs,
+        Abx,
+        Aby,
+        Ind,
+        Izx,
+        Izy,
+        Rel,
+    }
+
+    impl AddrMode {
+        pub fn length(self) -> u16 {
+            match self {
+                AddrMode::Imp | AddrMode::Acc => 1,
+                AddrMode::Imm
+                | AddrMode::Zp
+                | AddrMode::Zpx
+                | AddrMode::Zpy
+                | AddrMode::Izx
+                | AddrMode::Izy
+                | AddrMode::Rel => 2,
+                AddrMode::Abs | AddrMode::Abx | AddrMode::Aby | AddrMode::Ind => 3,
+            }
+        }
+    }
+
+    use AddrMode::*;
+
+    /// (mnemonic, addressing mode, is_unofficial) for every opcode.
+#[rustfmt::skip]
+pub const OPCODE_TABLE: [(&str, AddrMode, bool); 256] = [
+    // 0x00
+    ("BRK", Imp, false), ("ORA", Izx, false), ("KIL", Imp, true),  ("SLO", Izx, true),
+    ("NOP", Zp,  true),  ("ORA", Zp,  false), ("ASL", Zp,  false), ("SLO", Zp,  true),
+    ("PHP", Imp, false), ("ORA", Imm, false), ("ASL", Acc, false), ("ANC", Imm, true),
+    ("NOP", Abs, true),  ("ORA", Abs, false), ("ASL", Abs, false), ("SLO", Abs, true),
+    // 0x10
+    ("BPL", Rel, false), ("ORA", Izy, false), ("KIL", Imp, true),  ("SLO", Izy, true),
+    ("NOP", Zpx, true),  ("ORA", Zpx, false), ("ASL", Zpx, false), ("SLO", Zpx, true),
+    ("CLC", Imp, false), ("ORA", Aby, false), ("NOP", Imp, true),  ("SLO", Aby, true),
+    ("NOP", Abx, true),  ("ORA", Abx, false), ("ASL", Abx, false), ("SLO", Abx, true),
+    // 0x20
+    ("JSR", Abs, false), ("AND", Izx, false), ("KIL", Imp, true),  ("RLA", Izx, true),
+    ("BIT", Zp,  false), ("AND", Zp,  false), ("ROL", Zp,  false), ("RLA", Zp,  true),
+    ("PLP", Imp, false), ("AND", Imm, false), ("ROL", Acc, false), ("ANC", Imm, true),
+    ("BIT", Abs, false), ("AND", Abs, false), ("ROL", Abs, false), ("RLA", Abs, true),
+    // 0x30
+    ("BMI", Rel, false), ("AND", Izy, false), ("KIL", Imp, true),  ("RLA", Izy, true),
+    ("NOP", Zpx, true),  ("AND", Zpx, false), ("ROL", Zpx, false), ("RLA", Zpx, true),
+    ("SEC", Imp, false), ("AND", Aby, false), ("NOP", Imp, true),  ("RLA", Aby, true),
+    ("NOP", Abx, true),  ("AND", Abx, false), ("ROL", Abx, false), ("RLA", Abx, true),
+    // 0x40
+    ("RTI", Imp, false), ("EOR", Izx, false), ("KIL", Imp, true),  ("SRE", Izx, true),
+    ("NOP", Zp,  true),  ("EOR", Zp,  false), ("LSR", Zp,  false), ("SRE", Zp,  true),
+    ("PHA", Imp, false), ("EOR", Imm, false), ("LSR", Acc, false), ("ALR", Imm, true),
+    ("JMP", Abs, false), ("EOR", Abs, false), ("LSR", Abs, false), ("SRE", Abs, true),
+    // 0x50
+    ("BVC", Rel, false), ("EOR", Izy, false), ("KIL", Imp, true),  ("SRE", Izy, true),
+    ("NOP", Zpx, true),  ("EOR", Zpx, false), ("LSR", Zpx, false), ("SRE", Zpx, true),
+    ("CLI", Imp, false), ("EOR", Aby, false), ("NOP", Imp, true),  ("SRE", Aby, true),
+    ("NOP", Abx, true),  ("EOR", Abx, false), ("LSR", Abx, false), ("SRE", Abx, true),
+    // 0x60
+    ("RTS", Imp, false), ("ADC", Izx, false), ("KIL", Imp, true),  ("RRA", Izx, true),
+    ("NOP", Zp,  true),  ("ADC", Zp,  false), ("ROR", Zp,  false), ("RRA", Zp,  true),
+    ("PLA", Imp, false), ("ADC", Imm, false), ("ROR", Acc, false), ("ARR", Imm, true),
+    ("JMP", Ind, false), ("ADC", Abs, false), ("ROR", Abs, false), ("RRA", Abs, true),
+    // 0x70
+    ("BVS", Rel, false), ("ADC", Izy, false), ("KIL", Imp, true),  ("RRA", Izy, true),
+    ("NOP", Zpx, true),  ("ADC", Zpx, false), ("ROR", Zpx, false), ("RRA", Zpx, true),
+    ("SEI", Imp, false), ("ADC", Aby, false), ("NOP", Imp, true),  ("RRA", Aby, true),
+    ("NOP", Abx, true),  ("ADC", Abx, false), ("ROR", Abx, false), ("RRA", Abx, true),
+    // 0x80
+    ("NOP", Imm, true),  ("STA", Izx, false), ("NOP", Imm, true),  ("SAX", Izx, true),
+    ("STY", Zp,  false), ("STA", Zp,  false), ("STX", Zp,  false), ("SAX", Zp,  true),
+    ("DEY", Imp, false), ("NOP", Imm, true),  ("TXA", Imp, false), ("XAA", Imm, true),
+    ("STY", Abs, false), ("STA", Abs, false), ("STX", Abs, false), ("SAX", Abs, true),
+    // 0x90
+    ("BCC", Rel, false), ("STA", Izy, false), ("KIL", Imp, true),  ("AHX", Izy, true),
+    ("STY", Zpx, false), ("STA", Zpx, false), ("STX", Zpy, false), ("SAX", Zpy, true),
+    ("TYA", Imp, false), ("STA", Aby, false), ("TXS", Imp, false), ("TAS", Aby, true),
+    ("SHY", Abx, true),  ("STA", Abx, false), ("SHX", Aby, true),  ("AHX", Aby, true),
+    // 0xA0
+    ("LDY", Imm, false), ("LDA", Izx, false), ("LDX", Imm, false), ("LAX", Izx, true),
+    ("LDY", Zp,  false), ("LDA", Zp,  false), ("LDX", Zp,  false), ("LAX", Zp,  true),
+    ("TAY", Imp, false), ("LDA", Imm, false), ("TAX", Imp, false), ("LAX", Imm, true),
+    ("LDY", Abs, false), ("LDA", Abs, false), ("LDX", Abs, false), ("LAX", Abs, true),
+    // 0xB0
+    ("BCS", Rel, false), ("LDA", Izy, false), ("KIL", Imp, true),  ("LAX", Izy, true),
+    ("LDY", Zpx, false), ("LDA", Zpx, false), ("LDX", Zpy, false), ("LAX", Zpy, true),
+    ("CLV", Imp, false), ("LDA", Aby, false), ("TSX", Imp, false), ("LAS", Aby, true),
+    ("LDY", Abx, false), ("LDA", Abx, false), ("LDX", Aby, false), ("LAX", Aby, true),
+    // 0xC0
+    ("CPY", Imm, false), ("CMP", Izx, false), ("NOP", Imm, true),  ("DCP", Izx, true),
+    ("CPY", Zp,  false), ("CMP", Zp,  false), ("DEC", Zp,  false), ("DCP", Zp,  true),
+    ("INY", Imp, false), ("CMP", Imm, false), ("DEX", Imp, false), ("AXS", Imm, true),
+    ("CPY", Abs, false), ("CMP", Abs, false), ("DEC", Abs, false), ("DCP", Abs, true),
+    // 0xD0
+    ("BNE", Rel, false), ("CMP", Izy, false), ("KIL", Imp, true),  ("DCP", Izy, true),
+    ("NOP", Zpx, true),  ("CMP", Zpx, false), ("DEC", Zpx, false), ("DCP", Zpx, true),
+    ("CLD", Imp, false), ("CMP", Aby, false), ("NOP", Imp, true),  ("DCP", Aby, true),
+    ("NOP", Abx, true),  ("CMP", Abx, false), ("DEC", Abx, false), ("DCP", Abx, true),
+    // 0xE0
+    ("CPX", Imm, false), ("SBC", Izx, false), ("NOP", Imm, true),  ("ISB", Izx, true),
+    ("CPX", Zp,  false), ("SBC", Zp,  false), ("INC", Zp,  false), ("ISB", Zp,  true),
+    ("INX", Imp, false), ("SBC", Imm, false), ("NOP", Imp, false), ("SBC", Imm, true),
+    ("CPX", Abs, false), ("SBC", Abs, false), ("INC", Abs, false), ("ISB", Abs, true),
+    // 0xF0
+    ("BEQ", Rel, false), ("SBC", Izy, false), ("KIL", Imp, true),  ("ISB", Izy, true),
+    ("NOP", Zpx, true),  ("SBC", Zpx, false), ("INC", Zpx, false), ("ISB", Zpx, true),
+    ("SED", Imp, false), ("SBC", Aby, false), ("NOP", Imp, true),  ("ISB", Aby, true),
+    ("NOP", Abx, true),  ("SBC", Abx, false), ("INC", Abx, false), ("ISB", Abx, true),
+];
 }
