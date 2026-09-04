@@ -10,6 +10,10 @@ Contains debugging session notes and references:
 - `DEBUGGING_SESSION_2025-01-15.md` - Detailed debugging session notes
 - `DEBUG_REFERENCE.md` - Reference guide for debugging the emulator
 
+### `/plans/`
+Contains implementation plans and roadmaps:
+- `ACCURACY_ROADMAP.md` - Phased plan to reach test-ROM compliance (GitHub issues #1-#5)
+
 ### `/testing/`
 Contains testing guides and documentation:
 - `DEBUGGING_GUIDE.md` - Guide for debugging the emulator
