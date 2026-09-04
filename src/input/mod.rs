@@ -20,6 +20,12 @@ pub struct Controller {
     index: u8,
 }
 
+impl Default for Controller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Controller {
     pub fn new() -> Self {
         Controller {
@@ -46,14 +52,19 @@ impl Controller {
     pub fn write(&mut self, value: u8) {
         let was_strobe = self.strobe;
         self.strobe = (value & 0x01) != 0;
-        
+
         // Reset index when strobe goes from high to low
         if was_strobe && !self.strobe {
             self.index = 0;
             log::debug!("Controller strobe reset (high->low), ready to read buttons");
         }
-        
-        log::trace!("Controller strobe write: value={:02X}, strobe={}, was_strobe={}", value, self.strobe, was_strobe);
+
+        log::trace!(
+            "Controller strobe write: value={:02X}, strobe={}, was_strobe={}",
+            value,
+            self.strobe,
+            was_strobe
+        );
     }
 
     pub fn read(&mut self) -> u8 {
@@ -81,17 +92,25 @@ impl Controller {
         };
 
         let result = if button_state { 0x01 } else { 0x00 };
-        
+
         // Always log the first read after strobe reset
         if self.index == 0 && !self.strobe {
-            log::debug!("Controller first read after strobe: buttons={:08b}, A pressed={}", 
-                       self.buttons.bits(), self.buttons.contains(ControllerButton::A));
+            log::debug!(
+                "Controller first read after strobe: buttons={:08b}, A pressed={}",
+                self.buttons.bits(),
+                self.buttons.contains(ControllerButton::A)
+            );
         }
-        
+
         // Log any non-zero button state
         if result != 0 || self.buttons.bits() != 0 {
-            log::debug!("Controller read: strobe={}, index={}, buttons={:08b}, result={:02X}", 
-                       self.strobe, self.index, self.buttons.bits(), result);
+            log::debug!(
+                "Controller read: strobe={}, index={}, buttons={:08b}, result={:02X}",
+                self.strobe,
+                self.index,
+                self.buttons.bits(),
+                result
+            );
         }
 
         // Only increment index when strobe is low and we haven't read all 8 buttons yet
@@ -104,12 +123,20 @@ impl Controller {
 
     pub fn press(&mut self, button: ControllerButton) {
         self.buttons.insert(button);
-        log::info!("Button pressed: {:?}, state: {:08b}", button, self.buttons.bits());
+        log::info!(
+            "Button pressed: {:?}, state: {:08b}",
+            button,
+            self.buttons.bits()
+        );
     }
 
     pub fn release(&mut self, button: ControllerButton) {
         self.buttons.remove(button);
-        log::info!("Button released: {:?}, state: {:08b}", button, self.buttons.bits());
+        log::info!(
+            "Button released: {:?}, state: {:08b}",
+            button,
+            self.buttons.bits()
+        );
     }
 
     pub fn _is_pressed(&self, button: ControllerButton) -> bool {

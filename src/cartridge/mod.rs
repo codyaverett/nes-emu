@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Result, Error, ErrorKind};
+use std::io::{Error, ErrorKind, Read, Result};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -18,7 +18,7 @@ pub struct Cartridge {
     pub _mirroring: Mirroring,
     pub _battery_backed: bool,
     pub prg_ram: Vec<u8>,
-    
+
     // MMC1 state (Mapper 1)
     mmc1_shift_register: u8,
     mmc1_shift_count: u8,
@@ -26,7 +26,7 @@ pub struct Cartridge {
     mmc1_chr_bank_0: u8,
     mmc1_chr_bank_1: u8,
     mmc1_prg_bank: u8,
-    
+
     // Mapper 65 state (Irem H3001)
     m65_prg_banks: [u8; 3],
     m65_chr_banks: [u8; 8],
@@ -37,7 +37,7 @@ impl Cartridge {
         let mut file = File::open(path)?;
         let mut rom_data = Vec::new();
         file.read_to_end(&mut rom_data)?;
-        
+
         Self::load_from_bytes(&rom_data)
     }
 
@@ -52,10 +52,10 @@ impl Cartridge {
 
         let prg_rom_size = data[4] as usize * 0x4000;
         let chr_rom_size = data[5] as usize * 0x2000;
-        
+
         let flags_6 = data[6];
         let flags_7 = data[7];
-        
+
         let mirroring = if (flags_6 & 0x08) != 0 {
             Mirroring::FourScreen
         } else if (flags_6 & 0x01) != 0 {
@@ -63,30 +63,34 @@ impl Cartridge {
         } else {
             Mirroring::Horizontal
         };
-        
+
         let battery_backed = (flags_6 & 0x02) != 0;
         let trainer_present = (flags_6 & 0x04) != 0;
-        
+
         let mapper = (flags_7 & 0xF0) | ((flags_6 & 0xF0) >> 4);
-        
-        let prg_ram_size = if data[8] == 0 { 0x2000 } else { data[8] as usize * 0x2000 };
-        
+
+        let prg_ram_size = if data[8] == 0 {
+            0x2000
+        } else {
+            data[8] as usize * 0x2000
+        };
+
         let header_size = 16;
         let trainer_size = if trainer_present { 512 } else { 0 };
         let prg_rom_start = header_size + trainer_size;
         let chr_rom_start = prg_rom_start + prg_rom_size;
-        
+
         if data.len() < chr_rom_start + chr_rom_size {
             return Err(Error::new(ErrorKind::InvalidData, "ROM file truncated"));
         }
-        
+
         let prg_rom = data[prg_rom_start..prg_rom_start + prg_rom_size].to_vec();
         let chr_rom = if chr_rom_size > 0 {
             data[chr_rom_start..chr_rom_start + chr_rom_size].to_vec()
         } else {
             vec![0; 0x2000]
         };
-        
+
         Ok(Cartridge {
             prg_rom,
             chr_rom,
@@ -94,7 +98,7 @@ impl Cartridge {
             _mirroring: mirroring,
             _battery_backed: battery_backed,
             prg_ram: vec![0; prg_ram_size],
-            
+
             // Initialize MMC1 state
             mmc1_shift_register: 0,
             mmc1_shift_count: 0,
@@ -102,7 +106,7 @@ impl Cartridge {
             mmc1_chr_bank_0: 0,
             mmc1_chr_bank_1: 0,
             mmc1_prg_bank: 0,
-            
+
             // Initialize Mapper 65 state
             m65_prg_banks: [0, 1, 2], // Default banks
             m65_chr_banks: [0, 1, 2, 3, 4, 5, 6, 7],
@@ -129,7 +133,7 @@ impl Cartridge {
                 // MMC1 Mapper
                 let prg_mode = (self.mmc1_control >> 2) & 0x03;
                 let prg_banks = self.prg_rom.len() / 0x4000;
-                
+
                 match prg_mode {
                     0 | 1 => {
                         // 32KB mode: ignore low bit of bank number
@@ -179,7 +183,7 @@ impl Cartridge {
                             }
                         }
                     }
-                    _ => 0
+                    _ => 0,
                 }
             }
             65 => {
@@ -225,7 +229,7 @@ impl Cartridge {
                             0
                         }
                     }
-                    _ => 0
+                    _ => 0,
                 }
             }
             _ => {
@@ -234,7 +238,7 @@ impl Cartridge {
                 if self.prg_rom.is_empty() {
                     return 0;
                 }
-                
+
                 let rom_size = self.prg_rom.len();
                 if rom_size <= 0x4000 {
                     // 16KB or smaller: mirror across the entire range
@@ -278,7 +282,7 @@ impl Cartridge {
                     // Normal write
                     self.mmc1_shift_register = (self.mmc1_shift_register >> 1) | ((value & 1) << 4);
                     self.mmc1_shift_count += 1;
-                    
+
                     if self.mmc1_shift_count == 5 {
                         // Complete write
                         match addr & 0x6000 {
@@ -332,11 +336,9 @@ impl Cartridge {
         if self.chr_rom.is_empty() {
             return 0;
         }
-        
+
         match self.mapper {
-            0 => {
-                self.chr_rom[(addr & 0x1FFF) as usize]
-            }
+            0 => self.chr_rom[(addr & 0x1FFF) as usize],
             _ => {
                 log::warn!("Unsupported mapper: {}", self.mapper);
                 0
@@ -348,7 +350,7 @@ impl Cartridge {
         if self.chr_rom.is_empty() {
             return;
         }
-        
+
         match self.mapper {
             0 => {
                 if self.chr_rom.len() == 0x2000 {
@@ -364,22 +366,18 @@ impl Cartridge {
     pub fn _mirror_vram_addr(&self, addr: u16) -> u16 {
         let mirrored_addr = addr & 0x2FFF;
         let table_index = (mirrored_addr - 0x2000) / 0x0400;
-        
+
         match self._mirroring {
-            Mirroring::Vertical => {
-                match table_index {
-                    0 | 2 => 0x2000 + (mirrored_addr & 0x03FF),
-                    1 | 3 => 0x2400 + (mirrored_addr & 0x03FF),
-                    _ => mirrored_addr,
-                }
-            }
-            Mirroring::Horizontal => {
-                match table_index {
-                    0 | 1 => 0x2000 + (mirrored_addr & 0x03FF),
-                    2 | 3 => 0x2400 + (mirrored_addr & 0x03FF),
-                    _ => mirrored_addr,
-                }
-            }
+            Mirroring::Vertical => match table_index {
+                0 | 2 => 0x2000 + (mirrored_addr & 0x03FF),
+                1 | 3 => 0x2400 + (mirrored_addr & 0x03FF),
+                _ => mirrored_addr,
+            },
+            Mirroring::Horizontal => match table_index {
+                0 | 1 => 0x2000 + (mirrored_addr & 0x03FF),
+                2 | 3 => 0x2400 + (mirrored_addr & 0x03FF),
+                _ => mirrored_addr,
+            },
             Mirroring::FourScreen => mirrored_addr,
             Mirroring::_SingleScreenLower => 0x2000 + (mirrored_addr & 0x03FF),
             Mirroring::_SingleScreenUpper => 0x2400 + (mirrored_addr & 0x03FF),

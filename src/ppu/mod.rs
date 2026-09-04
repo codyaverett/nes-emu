@@ -1,5 +1,5 @@
-use bitflags::bitflags;
 use crate::cartridge::Mirroring;
+use bitflags::bitflags;
 
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
@@ -68,31 +68,31 @@ pub struct Ppu {
     pub ppu_data_buffer: u8,
     pub vram: [u8; 0x4000],
     pub palette: [u8; 32],
-    
+
     pub scanline: u16,
     pub cycle: u16,
     pub frame: u64,
-    
+
     pub frame_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
     pub nmi_interrupt: bool,
-    
+
     // PPU internal registers for scrolling
-    v: u16,     // Current VRAM address (15 bits)
-    t: u16,     // Temporary VRAM address (15 bits)
-    x: u8,      // Fine X scroll (3 bits)
-    w: bool,    // Write latch
+    v: u16,  // Current VRAM address (15 bits)
+    t: u16,  // Temporary VRAM address (15 bits)
+    x: u8,   // Fine X scroll (3 bits)
+    w: bool, // Write latch
 
     // Background rendering shift registers
-    bg_shift_pattern_lo: u16,  // Low pattern shift register
-    bg_shift_pattern_hi: u16,  // High pattern shift register
-    bg_shift_attrib_lo: u16,   // Low attribute shift register (16-bit like pattern shifters)
-    bg_shift_attrib_hi: u16,   // High attribute shift register (16-bit like pattern shifters)
+    bg_shift_pattern_lo: u16, // Low pattern shift register
+    bg_shift_pattern_hi: u16, // High pattern shift register
+    bg_shift_attrib_lo: u16,  // Low attribute shift register (16-bit like pattern shifters)
+    bg_shift_attrib_hi: u16,  // High attribute shift register (16-bit like pattern shifters)
 
     // Next tile latches (loaded into shift registers every 8 cycles)
-    bg_next_tile_id: u8,       // Next tile ID from nametable
-    bg_next_tile_attrib: u8,   // Next tile attribute
-    bg_next_tile_lsb: u8,      // Next tile pattern low byte
-    bg_next_tile_msb: u8,      // Next tile pattern high byte
+    bg_next_tile_id: u8,     // Next tile ID from nametable
+    bg_next_tile_attrib: u8, // Next tile attribute
+    bg_next_tile_lsb: u8,    // Next tile pattern low byte
+    bg_next_tile_msb: u8,    // Next tile pattern high byte
 
     // Sprite evaluation data
     secondary_oam: [u8; 32],
@@ -102,9 +102,15 @@ pub struct Ppu {
     sprite_positions: [u8; 8],
     sprite_priorities: [u8; 8],
     sprite_indexes: [u8; 8],
-    
+
     // Mirroring mode
     pub mirroring: Mirroring,
+}
+
+impl Default for Ppu {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Ppu {
@@ -144,17 +150,17 @@ impl Ppu {
             sprite_indexes: [0; 8],
             mirroring: Mirroring::Horizontal,
         };
-        
+
         // Initialize with default NES palette values
         // Common default palette that shows something
-        ppu.palette[0] = 0x22;  // Light blue background (common for SMB)
-        
+        ppu.palette[0] = 0x22; // Light blue background (common for SMB)
+
         // Background palettes - set to reasonable defaults
         for i in 0..32 {
             ppu.palette[i] = 0x0F; // Default to black
         }
         ppu.palette[0] = 0x22; // Light blue for universal background
-        
+
         ppu
     }
 
@@ -206,7 +212,7 @@ impl Ppu {
     fn read_status(&mut self) -> u8 {
         let result = self.status.bits();
         self.status.remove(PpuStatus::VBLANK_STARTED);
-        self.w = false;  // Clear write latch
+        self.w = false; // Clear write latch
         result
     }
 
@@ -224,7 +230,7 @@ impl Ppu {
             self.ppu_data_buffer = self.read_vram(addr - 0x1000);
             self.read_vram(addr)
         };
-        
+
         if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) {
             self.v = (self.v + 32) & 0x7FFF;
         } else {
@@ -236,12 +242,14 @@ impl Ppu {
     fn write_ctrl(&mut self, value: u8) {
         let prev_nmi = self.ctrl.contains(PpuCtrl::NMI_ENABLE);
         self.ctrl = PpuCtrl::from_bits_truncate(value);
-        
-        if !prev_nmi && self.ctrl.contains(PpuCtrl::NMI_ENABLE) 
-            && self.status.contains(PpuStatus::VBLANK_STARTED) {
+
+        if !prev_nmi
+            && self.ctrl.contains(PpuCtrl::NMI_ENABLE)
+            && self.status.contains(PpuStatus::VBLANK_STARTED)
+        {
             self.nmi_interrupt = true;
         }
-        
+
         // Set nametable bits in temporary address
         self.t = (self.t & !0x0C00) | ((value as u16 & 0x03) << 10);
     }
@@ -262,13 +270,14 @@ impl Ppu {
     fn write_scroll(&mut self, value: u8) {
         if !self.w {
             // First write (X scroll)
-            self.x = value & 0x07;  // Fine X scroll (3 bits)
-            self.t = (self.t & !0x001F) | ((value as u16) >> 3);  // Coarse X
+            self.x = value & 0x07; // Fine X scroll (3 bits)
+            self.t = (self.t & !0x001F) | ((value as u16) >> 3); // Coarse X
         } else {
             // Second write (Y scroll)
-            self.t = (self.t & !0x73E0) | 
-                     (((value as u16) & 0x07) << 12) |  // Fine Y
-                     (((value as u16) & 0xF8) << 2);    // Coarse Y
+            // Fine Y goes to bits 12-14, coarse Y to bits 5-9
+            self.t = (self.t & !0x73E0)
+                | (((value as u16) & 0x07) << 12)
+                | (((value as u16) & 0xF8) << 2);
         }
         self.w = !self.w;
     }
@@ -280,7 +289,7 @@ impl Ppu {
         } else {
             // Second write (low byte)
             self.t = (self.t & 0xFF00) | value as u16;
-            self.v = self.t;  // Copy t to v
+            self.v = self.t; // Copy t to v
         }
         self.w = !self.w;
     }
@@ -288,7 +297,7 @@ impl Ppu {
     fn write_ppu_data(&mut self, value: u8) {
         let addr = self.v & 0x3FFF;
         self.write_vram(addr, value);
-        
+
         if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) {
             self.v = (self.v + 32) & 0x7FFF;
         } else {
@@ -313,7 +322,7 @@ impl Ppu {
             }
             0x3F00..=0x3F1F => {
                 let palette_addr = (addr & 0x1F) as usize;
-                if palette_addr % 4 == 0 && palette_addr >= 16 {
+                if palette_addr.is_multiple_of(4) && palette_addr >= 16 {
                     self.palette[palette_addr - 16]
                 } else {
                     self.palette[palette_addr]
@@ -337,7 +346,7 @@ impl Ppu {
             }
             0x3F00..=0x3F1F => {
                 let palette_addr = (addr & 0x1F) as usize;
-                if palette_addr % 4 == 0 && palette_addr >= 16 {
+                if palette_addr.is_multiple_of(4) && palette_addr >= 16 {
                     self.palette[palette_addr - 16] = value;
                 } else {
                     self.palette[palette_addr] = value;
@@ -347,11 +356,11 @@ impl Ppu {
             _ => {}
         }
     }
-    
+
     fn mirror_nametable_addr(&self, addr: u16) -> u16 {
         let table = (addr - 0x2000) / 0x400;
         let offset = (addr - 0x2000) % 0x400;
-        
+
         let mirrored_table = match self.mirroring {
             Mirroring::Horizontal => {
                 // 0,1 -> 0; 2,3 -> 1
@@ -382,14 +391,15 @@ impl Ppu {
                 1
             }
         };
-        
+
         0x2000 + mirrored_table * 0x400 + offset
     }
 
     pub fn step(&mut self) {
         self.cycle += 1;
-        
-        let rendering_enabled = self.mask.contains(PpuMask::SHOW_BG) || self.mask.contains(PpuMask::SHOW_SPRITES);
+
+        let rendering_enabled =
+            self.mask.contains(PpuMask::SHOW_BG) || self.mask.contains(PpuMask::SHOW_SPRITES);
 
         if self.scanline < 240 {
             // Visible scanlines (0-239)
@@ -415,7 +425,9 @@ impl Ppu {
             // Background rendering with cycle-accurate tile fetching
             if rendering_enabled {
                 // Update shift registers every cycle during rendering
-                if (self.cycle >= 1 && self.cycle <= 256) || (self.cycle >= 321 && self.cycle <= 336) {
+                if (self.cycle >= 1 && self.cycle <= 256)
+                    || (self.cycle >= 321 && self.cycle <= 336)
+                {
                     self.update_shifters();
 
                     // 8-cycle tile fetch pipeline
@@ -487,7 +499,9 @@ impl Ppu {
             if rendering_enabled {
                 // Run the same tile fetching pipeline as visible scanlines
                 // This primes the shift registers for the first scanline
-                if (self.cycle >= 1 && self.cycle <= 256) || (self.cycle >= 321 && self.cycle <= 336) {
+                if (self.cycle >= 1 && self.cycle <= 256)
+                    || (self.cycle >= 321 && self.cycle <= 336)
+                {
                     self.update_shifters();
 
                     // 8-cycle tile fetch pipeline
@@ -534,7 +548,7 @@ impl Ppu {
         if self.cycle >= 341 {
             self.cycle = 0;
             self.scanline += 1;
-            
+
             if self.scanline > 261 {
                 self.scanline = 0;
                 self.frame += 1;
@@ -545,7 +559,7 @@ impl Ppu {
     fn render_pixel(&mut self) {
         let x = (self.cycle - 1) as usize;
         let y = self.scanline as usize;
-        
+
         if x < SCREEN_WIDTH && y < SCREEN_HEIGHT {
             let mut bg_pixel = 0u8;
             let mut bg_palette = 0u8;
@@ -553,29 +567,29 @@ impl Ppu {
             let mut sprite_palette = 0u8;
             let mut sprite_priority = false;
             let mut sprite_zero = false;
-            
+
             // Get background pixel if enabled
-            if self.mask.contains(PpuMask::SHOW_BG) {
-                if x >= 8 || self.mask.contains(PpuMask::SHOW_BG_LEFT) {
-                    let bg_data = self.get_background_pixel(x as u16, y as u16);
-                    bg_pixel = bg_data & 0x03;
-                    bg_palette = bg_data >> 2;
-                }
+            if self.mask.contains(PpuMask::SHOW_BG)
+                && (x >= 8 || self.mask.contains(PpuMask::SHOW_BG_LEFT))
+            {
+                let bg_data = self.get_background_pixel(x as u16, y as u16);
+                bg_pixel = bg_data & 0x03;
+                bg_palette = bg_data >> 2;
             }
-            
+
             // Get sprite pixel if enabled
-            if self.mask.contains(PpuMask::SHOW_SPRITES) {
-                if x >= 8 || self.mask.contains(PpuMask::SHOW_SPRITES_LEFT) {
-                    let sprite_data = self.get_sprite_pixel(x as u8);
-                    if sprite_data.0 > 0 {
-                        sprite_pixel = sprite_data.0 & 0x03;
-                        sprite_palette = (sprite_data.0 >> 2) & 0x03;
-                        sprite_priority = sprite_data.1;
-                        sprite_zero = sprite_data.2;
-                    }
+            if self.mask.contains(PpuMask::SHOW_SPRITES)
+                && (x >= 8 || self.mask.contains(PpuMask::SHOW_SPRITES_LEFT))
+            {
+                let sprite_data = self.get_sprite_pixel(x as u8);
+                if sprite_data.0 > 0 {
+                    sprite_pixel = sprite_data.0 & 0x03;
+                    sprite_palette = (sprite_data.0 >> 2) & 0x03;
+                    sprite_priority = sprite_data.1;
+                    sprite_zero = sprite_data.2;
                 }
             }
-            
+
             // Determine which pixel to display
             let (pixel, _is_sprite) = if bg_pixel == 0 && sprite_pixel == 0 {
                 (0, false)
@@ -602,9 +616,9 @@ impl Ppu {
                     ((bg_palette << 2) | bg_pixel, false)
                 }
             };
-            
+
             let color = self.get_color_from_palette(pixel);
-            
+
             let pixel_offset = (y * SCREEN_WIDTH + x) * 3;
             self.frame_buffer[pixel_offset] = color.0;
             self.frame_buffer[pixel_offset + 1] = color.1;
@@ -615,37 +629,37 @@ impl Ppu {
     fn increment_x(&mut self) {
         // Increment coarse X
         if (self.v & 0x001F) == 31 {
-            self.v &= !0x001F;  // Clear coarse X
-            self.v ^= 0x0400;   // Switch horizontal nametable
+            self.v &= !0x001F; // Clear coarse X
+            self.v ^= 0x0400; // Switch horizontal nametable
         } else {
             self.v += 1;
         }
     }
-    
+
     fn increment_y(&mut self) {
         // Increment fine Y
         if (self.v & 0x7000) != 0x7000 {
             self.v += 0x1000;
         } else {
-            self.v &= !0x7000;  // Clear fine Y
-            let mut y = (self.v & 0x03E0) >> 5;  // Get coarse Y
+            self.v &= !0x7000; // Clear fine Y
+            let mut y = (self.v & 0x03E0) >> 5; // Get coarse Y
             if y == 29 {
                 y = 0;
-                self.v ^= 0x0800;  // Switch vertical nametable
+                self.v ^= 0x0800; // Switch vertical nametable
             } else if y == 31 {
-                y = 0;  // Wrap around without switching nametable
+                y = 0; // Wrap around without switching nametable
             } else {
                 y += 1;
             }
             self.v = (self.v & !0x03E0) | (y << 5);
         }
     }
-    
+
     fn copy_x(&mut self) {
         // Copy horizontal position from t to v
         self.v = (self.v & !0x041F) | (self.t & 0x041F);
     }
-    
+
     fn copy_y(&mut self) {
         // Copy vertical position from t to v
         self.v = (self.v & !0x7BE0) | (self.t & 0x7BE0);
@@ -718,16 +732,26 @@ impl Ppu {
         // Load the next tile data into the shift registers
         // This happens every 8 cycles (at the end of each tile fetch)
         // The low 8 bits of the shift registers are loaded with new data
-        self.bg_shift_pattern_lo = (self.bg_shift_pattern_lo & 0xFF00) | (self.bg_next_tile_lsb as u16);
-        self.bg_shift_pattern_hi = (self.bg_shift_pattern_hi & 0xFF00) | (self.bg_next_tile_msb as u16);
+        self.bg_shift_pattern_lo =
+            (self.bg_shift_pattern_lo & 0xFF00) | (self.bg_next_tile_lsb as u16);
+        self.bg_shift_pattern_hi =
+            (self.bg_shift_pattern_hi & 0xFF00) | (self.bg_next_tile_msb as u16);
 
         // Load attribute bits into each attribute shifter (16-bit registers)
         // The attribute applies to an entire 8-pixel tile, so we fill the low 8 bits
         // with the same palette value (0x00 or 0xFF) while preserving the high 8 bits
-        self.bg_shift_attrib_lo = (self.bg_shift_attrib_lo & 0xFF00) |
-            if (self.bg_next_tile_attrib & 0x01) != 0 { 0xFF } else { 0x00 };
-        self.bg_shift_attrib_hi = (self.bg_shift_attrib_hi & 0xFF00) |
-            if (self.bg_next_tile_attrib & 0x02) != 0 { 0xFF } else { 0x00 };
+        self.bg_shift_attrib_lo = (self.bg_shift_attrib_lo & 0xFF00)
+            | if (self.bg_next_tile_attrib & 0x01) != 0 {
+                0xFF
+            } else {
+                0x00
+            };
+        self.bg_shift_attrib_hi = (self.bg_shift_attrib_hi & 0xFF00)
+            | if (self.bg_next_tile_attrib & 0x02) != 0 {
+                0xFF
+            } else {
+                0x00
+            };
     }
 
     fn get_background_pixel(&self, _x: u16, _y: u16) -> u8 {
@@ -770,16 +794,20 @@ impl Ppu {
     pub fn get_frame_buffer(&self) -> &[u8] {
         &self.frame_buffer
     }
-    
+
     fn evaluate_sprites(&mut self) {
         let mut secondary_index = 0;
         self.sprite_count = 0;
         self.sprite_zero_in_secondary = false;
-        
-        let sprite_height = if self.ctrl.contains(PpuCtrl::SPRITE_SIZE) { 16 } else { 8 };
+
+        let sprite_height = if self.ctrl.contains(PpuCtrl::SPRITE_SIZE) {
+            16
+        } else {
+            8
+        };
         // Sprites are evaluated for the NEXT scanline
         let y = (self.scanline + 1) as i16;
-        
+
         // Evaluate all 64 sprites
         for sprite_index in 0..64 {
             if secondary_index >= 32 {
@@ -787,10 +815,10 @@ impl Ppu {
                 self.status.insert(PpuStatus::SPRITE_OVERFLOW);
                 break;
             }
-            
+
             let oam_offset = sprite_index * 4;
             let sprite_y = self.oam_data[oam_offset] as i16 + 1; // Sprites are delayed by one scanline
-            
+
             // Check if sprite is on the next scanline
             if y >= sprite_y && y < sprite_y + sprite_height {
                 // Copy sprite to secondary OAM
@@ -798,11 +826,11 @@ impl Ppu {
                     for i in 0..4 {
                         self.secondary_oam[secondary_index + i] = self.oam_data[oam_offset + i];
                     }
-                    
+
                     if sprite_index == 0 {
                         self.sprite_zero_in_secondary = true;
                     }
-                    
+
                     if self.sprite_count < 8 {
                         self.sprite_indexes[self.sprite_count as usize] = sprite_index as u8;
                     }
@@ -812,20 +840,24 @@ impl Ppu {
             }
         }
     }
-    
+
     fn fetch_sprites(&mut self) {
-        let sprite_height = if self.ctrl.contains(PpuCtrl::SPRITE_SIZE) { 16 } else { 8 };
-        
+        let sprite_height = if self.ctrl.contains(PpuCtrl::SPRITE_SIZE) {
+            16
+        } else {
+            8
+        };
+
         for i in 0..self.sprite_count.min(8) {
             let oam_offset = i as usize * 4;
             let y_pos = self.secondary_oam[oam_offset];
             let tile_index = self.secondary_oam[oam_offset + 1];
             let attributes = self.secondary_oam[oam_offset + 2];
             let x_pos = self.secondary_oam[oam_offset + 3];
-            
+
             // Calculate the line of the sprite to fetch (sprites fetched are for the next scanline)
             let sprite_y = (self.scanline + 1).wrapping_sub(y_pos as u16 + 1);
-            
+
             // Handle vertical flip
             let actual_y = if (attributes & 0x80) != 0 {
                 // Vertically flipped
@@ -833,24 +865,32 @@ impl Ppu {
             } else {
                 sprite_y
             };
-            
+
             // Determine pattern table address
             let pattern_addr = if sprite_height == 8 {
                 // 8x8 sprites
-                let base = if self.ctrl.contains(PpuCtrl::SPRITE_PATTERN) { 0x1000 } else { 0x0000 };
+                let base = if self.ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
+                    0x1000
+                } else {
+                    0x0000
+                };
                 base + (tile_index as u16 * 16) + (actual_y & 7)
             } else {
                 // 8x16 sprites
                 let bank = (tile_index & 1) as u16 * 0x1000;
                 let tile = (tile_index & 0xFE) as u16;
-                let offset = if actual_y >= 8 { actual_y - 8 + 16 } else { actual_y };
+                let offset = if actual_y >= 8 {
+                    actual_y - 8 + 16
+                } else {
+                    actual_y
+                };
                 bank + (tile * 16) + offset
             };
-            
+
             // Fetch pattern data
             let low_byte = self.vram[(pattern_addr & 0x1FFF) as usize];
             let high_byte = self.vram[((pattern_addr + 8) & 0x1FFF) as usize];
-            
+
             // Handle horizontal flip
             let (low, high) = if (attributes & 0x40) != 0 {
                 // Horizontally flipped
@@ -858,28 +898,28 @@ impl Ppu {
             } else {
                 (low_byte, high_byte)
             };
-            
+
             self.sprite_patterns[i as usize] = (low, high);
             self.sprite_positions[i as usize] = x_pos;
             self.sprite_priorities[i as usize] = attributes & 0x20;
         }
     }
-    
+
     fn get_sprite_pixel(&self, x: u8) -> (u8, bool, bool) {
         if self.sprite_count == 0 {
             return (0, false, false);
         }
-        
+
         for i in 0..self.sprite_count.min(8) {
             let sprite_x = self.sprite_positions[i as usize];
-            
+
             if x >= sprite_x && x < sprite_x.wrapping_add(8) {
                 let pixel_x = x.wrapping_sub(sprite_x);
                 let (low, high) = self.sprite_patterns[i as usize];
-                
+
                 let bit = 7 - pixel_x;
                 let pixel_value = ((high >> bit) & 1) << 1 | ((low >> bit) & 1);
-                
+
                 if pixel_value != 0 {
                     // Get palette from attributes
                     let oam_index = (i as usize * 4 + 2).min(31);
@@ -887,12 +927,12 @@ impl Ppu {
                     let palette = (attributes & 0x03) + 4; // Sprite palettes are 4-7
                     let priority = (attributes & 0x20) != 0;
                     let is_sprite_zero = i == 0 && self.sprite_zero_in_secondary;
-                    
+
                     return ((palette << 2) | pixel_value, priority, is_sprite_zero);
                 }
             }
         }
-        
+
         (0, false, false)
     }
 }
@@ -908,23 +948,68 @@ fn reverse_byte(byte: u8) -> u8 {
 }
 
 const NES_PALETTE: [(u8, u8, u8); 64] = [
-    (0x7C, 0x7C, 0x7C), (0x00, 0x00, 0xFC), (0x00, 0x00, 0xBC), (0x44, 0x28, 0xBC),
-    (0x8F, 0x00, 0x77), (0xAB, 0x00, 0x13), (0xA7, 0x00, 0x00), (0x7F, 0x0B, 0x00),
-    (0x43, 0x2F, 0x00), (0x00, 0x47, 0x00), (0x00, 0x51, 0x00), (0x00, 0x3F, 0x17),
-    (0x1B, 0x3F, 0x5F), (0x00, 0x00, 0x00), (0x05, 0x05, 0x05), (0x05, 0x05, 0x05),
-    
-    (0xBC, 0xBC, 0xBC), (0x00, 0x73, 0xEF), (0x23, 0x3B, 0xEF), (0x83, 0x00, 0xF3),
-    (0xBF, 0x00, 0xBF), (0xE7, 0x00, 0x5B), (0xDB, 0x2B, 0x00), (0xCB, 0x4F, 0x0F),
-    (0x8B, 0x73, 0x00), (0x00, 0x97, 0x00), (0x00, 0xAB, 0x00), (0x00, 0x93, 0x3B),
-    (0x00, 0x83, 0x8B), (0x11, 0x11, 0x11), (0x09, 0x09, 0x09), (0x09, 0x09, 0x09),
-    
-    (0xFF, 0xFF, 0xFF), (0x3F, 0xBF, 0xFF), (0x5F, 0x97, 0xFF), (0xA7, 0x8B, 0xFD),
-    (0xF7, 0x7B, 0xFF), (0xFF, 0x77, 0xB7), (0xFF, 0x77, 0x63), (0xFF, 0x9B, 0x3B),
-    (0xF3, 0xBF, 0x3F), (0x83, 0xD3, 0x13), (0x4F, 0xDF, 0x4B), (0x58, 0xF8, 0x98),
-    (0x00, 0xEB, 0xDB), (0x66, 0x66, 0x66), (0x0D, 0x0D, 0x0D), (0x0D, 0x0D, 0x0D),
-    
-    (0xFF, 0xFF, 0xFF), (0xAB, 0xE7, 0xFF), (0xC7, 0xD7, 0xFF), (0xD7, 0xCB, 0xFF),
-    (0xFF, 0xC7, 0xFF), (0xFF, 0xC7, 0xDB), (0xFF, 0xBF, 0xB3), (0xFF, 0xDB, 0xAB),
-    (0xFF, 0xE7, 0xA3), (0xE3, 0xFF, 0xA3), (0xAB, 0xF3, 0xBF), (0xB3, 0xFF, 0xCF),
-    (0x9F, 0xFF, 0xF3), (0xDD, 0xDD, 0xDD), (0x11, 0x11, 0x11), (0x11, 0x11, 0x11),
+    (0x7C, 0x7C, 0x7C),
+    (0x00, 0x00, 0xFC),
+    (0x00, 0x00, 0xBC),
+    (0x44, 0x28, 0xBC),
+    (0x8F, 0x00, 0x77),
+    (0xAB, 0x00, 0x13),
+    (0xA7, 0x00, 0x00),
+    (0x7F, 0x0B, 0x00),
+    (0x43, 0x2F, 0x00),
+    (0x00, 0x47, 0x00),
+    (0x00, 0x51, 0x00),
+    (0x00, 0x3F, 0x17),
+    (0x1B, 0x3F, 0x5F),
+    (0x00, 0x00, 0x00),
+    (0x05, 0x05, 0x05),
+    (0x05, 0x05, 0x05),
+    (0xBC, 0xBC, 0xBC),
+    (0x00, 0x73, 0xEF),
+    (0x23, 0x3B, 0xEF),
+    (0x83, 0x00, 0xF3),
+    (0xBF, 0x00, 0xBF),
+    (0xE7, 0x00, 0x5B),
+    (0xDB, 0x2B, 0x00),
+    (0xCB, 0x4F, 0x0F),
+    (0x8B, 0x73, 0x00),
+    (0x00, 0x97, 0x00),
+    (0x00, 0xAB, 0x00),
+    (0x00, 0x93, 0x3B),
+    (0x00, 0x83, 0x8B),
+    (0x11, 0x11, 0x11),
+    (0x09, 0x09, 0x09),
+    (0x09, 0x09, 0x09),
+    (0xFF, 0xFF, 0xFF),
+    (0x3F, 0xBF, 0xFF),
+    (0x5F, 0x97, 0xFF),
+    (0xA7, 0x8B, 0xFD),
+    (0xF7, 0x7B, 0xFF),
+    (0xFF, 0x77, 0xB7),
+    (0xFF, 0x77, 0x63),
+    (0xFF, 0x9B, 0x3B),
+    (0xF3, 0xBF, 0x3F),
+    (0x83, 0xD3, 0x13),
+    (0x4F, 0xDF, 0x4B),
+    (0x58, 0xF8, 0x98),
+    (0x00, 0xEB, 0xDB),
+    (0x66, 0x66, 0x66),
+    (0x0D, 0x0D, 0x0D),
+    (0x0D, 0x0D, 0x0D),
+    (0xFF, 0xFF, 0xFF),
+    (0xAB, 0xE7, 0xFF),
+    (0xC7, 0xD7, 0xFF),
+    (0xD7, 0xCB, 0xFF),
+    (0xFF, 0xC7, 0xFF),
+    (0xFF, 0xC7, 0xDB),
+    (0xFF, 0xBF, 0xB3),
+    (0xFF, 0xDB, 0xAB),
+    (0xFF, 0xE7, 0xA3),
+    (0xE3, 0xFF, 0xA3),
+    (0xAB, 0xF3, 0xBF),
+    (0xB3, 0xFF, 0xCF),
+    (0x9F, 0xFF, 0xF3),
+    (0xDD, 0xDD, 0xDD),
+    (0x11, 0x11, 0x11),
+    (0x11, 0x11, 0x11),
 ];

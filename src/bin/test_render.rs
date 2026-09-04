@@ -43,8 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let debug_filename = format!("test_frame_{}_debug.txt", frame_num);
             system.ppu.save_frame_debug_info(&debug_filename)?;
             println!("Saved: {}", debug_filename);
-            println!("MASK: 0x{:02X}, CTRL: 0x{:02X}",
-                system.ppu.mask.bits(), system.ppu.ctrl.bits());
+            println!(
+                "MASK: 0x{:02X}, CTRL: 0x{:02X}",
+                system.ppu.mask.bits(),
+                system.ppu.ctrl.bits()
+            );
         }
 
         // Log when rendering gets enabled
@@ -52,8 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe {
             let rendering_now = system.ppu.mask.bits() & 0x18 != 0;
             if rendering_now && !RENDERING_ENABLED {
-                println!(">>> Rendering ENABLED at frame {}! MASK=0x{:02X}",
-                    frame_num, system.ppu.mask.bits());
+                println!(
+                    ">>> Rendering ENABLED at frame {}! MASK=0x{:02X}",
+                    frame_num,
+                    system.ppu.mask.bits()
+                );
                 RENDERING_ENABLED = true;
             }
         }

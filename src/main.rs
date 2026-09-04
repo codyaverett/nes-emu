@@ -1,26 +1,20 @@
-mod ppu;
-mod apu;
-mod cartridge;
-mod input;
-mod system;
-
-use sdl2::pixels::{PixelFormatEnum, Color};
+use anyhow::Result;
+use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+use sdl2::pixels::{Color, PixelFormatEnum};
+use sdl2::rect::Rect;
 use sdl2::render::TextureCreator;
 use sdl2::video::WindowContext;
-use sdl2::audio::{AudioCallback, AudioSpecDesired, AudioDevice};
-use sdl2::rect::Rect;
+use std::collections::VecDeque;
 use std::env;
 use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use anyhow::Result;
 
-use crate::cartridge::Cartridge;
-use crate::input::ControllerButton;
-use crate::system::System;
-use crate::ppu::{SCREEN_WIDTH, SCREEN_HEIGHT};
+use nes_emu::cartridge::Cartridge;
+use nes_emu::input::ControllerButton;
+use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use nes_emu::system::System;
 
 const SCALE: u32 = 3;
 
@@ -81,7 +75,9 @@ fn main() -> Result<()> {
     log::info!("ROM loaded successfully. Mapper: {}", cartridge.mapper);
 
     let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
-    let video_subsystem = sdl_context.video().map_err(|e| anyhow::anyhow!("Video subsystem failed: {}", e))?;
+    let video_subsystem = sdl_context
+        .video()
+        .map_err(|e| anyhow::anyhow!("Video subsystem failed: {}", e))?;
 
     let window = video_subsystem
         .window(
@@ -109,14 +105,18 @@ fn main() -> Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("Texture creation failed: {}", e))?;
 
-    let mut event_pump = sdl_context.event_pump().map_err(|e| anyhow::anyhow!("Event pump failed: {}", e))?;
+    let mut event_pump = sdl_context
+        .event_pump()
+        .map_err(|e| anyhow::anyhow!("Event pump failed: {}", e))?;
 
     // Setup audio (conditional)
     let muted = Arc::new(Mutex::new(false));
     let volume = Arc::new(Mutex::new(0.5f32)); // Start at 50% volume
 
     let (audio_buffer, _audio_device) = if enable_audio {
-        let audio_subsystem = sdl_context.audio().map_err(|e| anyhow::anyhow!("Audio subsystem failed: {}", e))?;
+        let audio_subsystem = sdl_context
+            .audio()
+            .map_err(|e| anyhow::anyhow!("Audio subsystem failed: {}", e))?;
         let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(16384)));
         let buffer_clone = Arc::clone(&buffer);
         let muted_clone = Arc::clone(&muted);
@@ -125,16 +125,14 @@ fn main() -> Result<()> {
         let desired_spec = AudioSpecDesired {
             freq: Some(44100),
             channels: Some(1),
-            samples: Some(1024),  // Larger buffer for smoother playback
+            samples: Some(1024), // Larger buffer for smoother playback
         };
 
         let audio_device = audio_subsystem
-            .open_playback(None, &desired_spec, |_spec| {
-                ApuAudioCallback {
-                    audio_buffer: buffer_clone,
-                    muted: muted_clone,
-                    volume: volume_clone,
-                }
+            .open_playback(None, &desired_spec, |_spec| ApuAudioCallback {
+                audio_buffer: buffer_clone,
+                muted: muted_clone,
+                volume: volume_clone,
             })
             .map_err(|e| anyhow::anyhow!("Failed to open audio device: {}", e))?;
 
@@ -214,7 +212,8 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Texture update failed: {}", e))?;
 
         canvas.clear();
-        canvas.copy(&texture, None, None)
+        canvas
+            .copy(&texture, None, None)
             .map_err(|e| anyhow::anyhow!("Canvas copy failed: {}", e))?;
 
         // Draw OSD if active
@@ -226,26 +225,37 @@ fn main() -> Result<()> {
                 // OSD position and size (scaled)
                 let osd_x = 10 * SCALE as i32;
                 let osd_y = 10 * SCALE as i32;
-                let osd_width = 200 * SCALE as u32;
-                let osd_height = 20 * SCALE as u32;
+                let osd_width = 200 * SCALE;
+                let osd_height = 20 * SCALE;
 
                 // Background (semi-transparent black)
                 canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
-                canvas.fill_rect(Rect::new(osd_x, osd_y, osd_width, osd_height))
+                canvas
+                    .fill_rect(Rect::new(osd_x, osd_y, osd_width, osd_height))
                     .map_err(|e| anyhow::anyhow!("Failed to draw OSD background: {}", e))?;
 
                 if is_muted {
                     // Muted indicator (red)
                     canvas.set_draw_color(Color::RGB(255, 0, 0));
-                    canvas.fill_rect(Rect::new(osd_x + 2 * SCALE as i32, osd_y + 2 * SCALE as i32,
-                                               osd_width - 4 * SCALE, osd_height - 4 * SCALE))
+                    canvas
+                        .fill_rect(Rect::new(
+                            osd_x + 2 * SCALE as i32,
+                            osd_y + 2 * SCALE as i32,
+                            osd_width - 4 * SCALE,
+                            osd_height - 4 * SCALE,
+                        ))
                         .map_err(|e| anyhow::anyhow!("Failed to draw mute indicator: {}", e))?;
                 } else {
                     // Volume bar (green)
                     let filled_width = ((osd_width - 4 * SCALE) as f32 * vol) as u32;
                     canvas.set_draw_color(Color::RGB(0, 255, 0));
-                    canvas.fill_rect(Rect::new(osd_x + 2 * SCALE as i32, osd_y + 2 * SCALE as i32,
-                                               filled_width, osd_height - 4 * SCALE))
+                    canvas
+                        .fill_rect(Rect::new(
+                            osd_x + 2 * SCALE as i32,
+                            osd_y + 2 * SCALE as i32,
+                            filled_width,
+                            osd_height - 4 * SCALE,
+                        ))
                         .map_err(|e| anyhow::anyhow!("Failed to draw volume bar: {}", e))?;
                 }
             } else {
@@ -261,7 +271,7 @@ fn main() -> Result<()> {
         } else {
             log::debug!("Frame took too long: {:?}", elapsed);
         }
-        
+
         _last_frame = Instant::now();
     }
 

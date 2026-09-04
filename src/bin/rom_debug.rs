@@ -16,10 +16,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== ROM Information ===");
     println!("Mapper: {}", cartridge.mapper);
     println!("Mirroring: {:?}", cartridge.get_mirroring());
-    println!("PRG ROM size: {} bytes ({} KB)",
-        cartridge.prg_rom.len(), cartridge.prg_rom.len() / 1024);
-    println!("CHR ROM size: {} bytes ({} KB)",
-        cartridge.chr_rom.len(), cartridge.chr_rom.len() / 1024);
+    println!(
+        "PRG ROM size: {} bytes ({} KB)",
+        cartridge.prg_rom.len(),
+        cartridge.prg_rom.len() / 1024
+    );
+    println!(
+        "CHR ROM size: {} bytes ({} KB)",
+        cartridge.chr_rom.len(),
+        cartridge.chr_rom.len() / 1024
+    );
     println!("Has CHR RAM: {}", cartridge.chr_ram.len() > 0);
     if cartridge.chr_ram.len() > 0 {
         println!("CHR RAM size: {} bytes", cartridge.chr_ram.len());
@@ -91,7 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             non_zero_count += 1;
         }
     }
-    println!("Total non-zero bytes in second pattern table: {}", non_zero_count);
+    println!(
+        "Total non-zero bytes in second pattern table: {}",
+        non_zero_count
+    );
 
     Ok(())
 }

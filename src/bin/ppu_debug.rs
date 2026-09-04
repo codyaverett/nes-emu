@@ -34,11 +34,13 @@ fn main() -> anyhow::Result<()> {
     for frame in 0..10 {
         system.run_frame_with_audio(None);
         if frame == 0 || frame == 9 {
-            println!("Frame {}: CTRL=0x{:02X}, MASK=0x{:02X}, STATUS=0x{:02X}",
+            println!(
+                "Frame {}: CTRL=0x{:02X}, MASK=0x{:02X}, STATUS=0x{:02X}",
                 frame,
                 system.ppu.ctrl.bits(),
                 system.ppu.mask.bits(),
-                system.ppu.status.bits());
+                system.ppu.status.bits()
+            );
         }
     }
 
