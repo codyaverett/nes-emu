@@ -28,7 +28,8 @@ current mirroring on every nametable access.
 | Contra | UxROM, CHR RAM | Blank blue screen | Correct title screen |
 | SMB3 | MMC3, CHR ROM | Blank blue screen | Opening curtain; bottom half black until the MMC3 IRQ lane lands (#3) |
 | mario.nes | NROM | Title screen | Byte-identical to before |
-| Zelda / Final Fantasy | MMC1, CHR RAM | Blank / partial | Byte-identical to before (the old PPU array already behaved as unbanked CHR RAM); whatever blocks them is not CHR |
+| Final Fantasy | MMC1, CHR RAM | Intro text | Byte-identical to before (the old PPU array already behaved as unbanked CHR RAM) |
+| Zelda | MMC1, CHR RAM | Blank blue at 900 frames | Byte-identical to before. Rendering is enabled (`$2001` = `0x1E`) but the palette is never written, so the game has not reached its PPU init; a CPU-side or NMI-path symptom for another lane, not CHR |
 
 ### Why the dead code did not help
 
@@ -161,3 +162,77 @@ black lower region until #3 lands, Zelda unchanged from before.
 3. Add `pub mod mapperN;` and a match arm in `Cartridge::build_mapper`.
 4. Add unit tests with `mapper::test_util::tagged_rom` so bank arithmetic is
    checked without a ROM image.
+
+## Appendix: reproducing the frame diff
+
+The before/after table was produced with a throwaway cargo project outside
+the repo that depends on `nes-emu` by path, runs a ROM for N frames, and
+dumps the raw 256x240 RGB buffer. Build it twice, once against a
+`git archive main` extraction and once against the branch, then `cmp` the
+dumps and convert them to PNG.
+
+`Cargo.toml`:
+
+```toml
+[package]
+name = "frame-harness"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+nes-emu = { path = "/path/to/nes-emu" }
+```
+
+`src/main.rs`:
+
+```rust
+use nes_emu::cartridge::Cartridge;
+use nes_emu::input::ControllerButton;
+use nes_emu::system::System;
+use std::{env, fs};
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let rom = &args[1];
+    let frames: usize = args[2].parse().unwrap();
+    let out = &args[3];
+    // Optional: tap Start at the given frame so title screens advance
+    let start_at: Option<usize> = args.get(4).map(|s| s.parse().unwrap());
+
+    let cart = Cartridge::load_from_file(rom).unwrap();
+    let mut system = System::new();
+    system.load_cartridge(cart);
+    for f in 0..frames {
+        if let Some(s) = start_at {
+            if f == s {
+                system.controller1.press(ControllerButton::START);
+            } else if f == s + 10 {
+                system.controller1.release(ControllerButton::START);
+            }
+        }
+        system.run_frame();
+    }
+    fs::write(out, system.get_frame_buffer()).unwrap();
+}
+```
+
+`topng.py` (stdlib only):
+
+```python
+import struct, sys, zlib
+W, H = 256, 240
+raw = open(sys.argv[1], 'rb').read()
+rows = b''.join(b'\x00' + raw[y * W * 3:(y + 1) * W * 3] for y in range(H))
+def chunk(t, d):
+    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+with open(sys.argv[2], 'wb') as f:
+    f.write(b'\x89PNG\r\n\x1a\n')
+    f.write(chunk(b'IHDR', struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)))
+    f.write(chunk(b'IDAT', zlib.compress(rows)))
+    f.write(chunk(b'IEND', b''))
+```
+
+Frame counts used: SMB 240/600, Zelda 400/900, SMB3 500/900 (Start at 500),
+TMNT 400 and 700 (Start at 400), Final Fantasy 400, Contra 300.
