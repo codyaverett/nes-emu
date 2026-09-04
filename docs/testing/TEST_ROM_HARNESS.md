@@ -1,0 +1,164 @@
+# Test ROM Harness
+
+**Date:** 2026-09-04
+**Tracking:** GitHub issue #1 (Phase 1 of `docs/plans/ACCURACY_ROADMAP.md`)
+
+The harness runs freely redistributable NES test ROMs headlessly under
+`cargo test` and asserts on the result each ROM reports. It is the
+measuring stick for the accuracy phases: each later phase un-ignores the
+suites it fixes, and a regression in an already-passing suite fails CI.
+
+## Layout
+
+| Path | Purpose |
+|------|---------|
+| `test-roms/` | ROM images, `nestest.log`, per-suite readmes. Sources in `test-roms/README.md`. |
+| `tests/common/mod.rs` | Shared runner: ROM loading, `$6000` protocol, legacy `$F8` protocol, nametable text decoding. |
+| `tests/blargg.rs` | One `#[test]` per blargg ROM (single and combined). |
+| `tests/nestest.rs` | nestest golden-log comparison and result-byte check. |
+| `src/system.rs` (tail of `impl System`) | Debug API used by the harness: `peek`, `poke`, register accessors, `step_instruction`, `total_cpu_cycles`, `trace_line`. |
+
+## Running
+
+```sh
+cargo test                         # everything that is expected to pass (the CI gate)
+cargo test --test blargg           # just the blargg suites
+cargo test --test nestest          # just nestest
+cargo test -- --include-ignored    # also run the suites known to fail
+cargo test --test blargg -- --include-ignored ppu_vbl_nmi   # one family, incl. ignored
+cargo test --release -- --include-ignored                    # faster when running everything
+```
+
+Ignored tests still compile and can be run individually by name, so a
+phase that is working on, say, `ppu_vbl_nmi_01_vbl_basics` can iterate
+with:
+
+```sh
+cargo test --test blargg ppu_vbl_nmi_01_vbl_basics -- --include-ignored --nocapture
+```
+
+The whole blargg file (including ignored tests) takes about 20 s in debug
+mode on an M-series laptop. The green subset takes a few seconds.
+
+## What a failure looks like
+
+A `$6000`-protocol failure prints the status byte, the NUL-terminated
+message the ROM wrote at `$6004`, and the on-screen console text:
+
+```
+apu_test/rom_singles/3-irq_flag.nes failed: status=0x04 after 27 frames (0 resets)
+--- $6004 message ---
+Flag should be set in $4017 mode $00
+3-irq_flag
+Failed #4
+--- screen ---
+ Flag should be set in $4017
+ mode $00
+```
+
+A nestest failure prints the first log line that disagrees:
+
+```
+nestest register mismatch at log line 3640
+  expected: DBCF  10 12     BPL $DBE3   A:66 X:00 Y:AA P:E5 SP:FB PPU: 91,160 CYC:10397
+  actual:   DBCE  33 10    *RLA ($10),Y A:66 X:00 Y:00 P:67 SP:FB PPU: 91,133 CYC:10395
+```
+
+`status=0x80 after N frames` means the ROM never finished inside its
+frame budget (it is usually stuck in a PPU sync loop waiting for timing
+the emulator does not reproduce); the reason strings call this "hangs".
+
+## Un-ignoring a suite
+
+1. Run the test with `--include-ignored` and confirm it passes on its
+   own and under `cargo test -- --include-ignored` (some suites share
+   state assumptions, e.g. the sprite overflow ROMs must pass in order).
+2. Delete the `ignore = "..."` argument from the `blargg_test!` /
+   `legacy_test!` / `screen_test!` invocation in `tests/blargg.rs`, or the
+   `#[ignore = ...]` attribute in `tests/nestest.rs`.
+3. Update the table below and the phase's "Done when" line in
+   `docs/plans/ACCURACY_ROADMAP.md`.
+4. If a frame budget (`SHORT`/`MEDIUM`/`LONG` in `tests/blargg.rs`) was
+   too tight for a now-working ROM, raise it in the test rather than
+   globally.
+
+When a suite that used to pass starts failing, the reason string format
+in the ignore attribute is `"<what the ROM reported>; <phase expected to
+fix it>"`, so a bisect can be done from the test list alone.
+
+## Reporting protocols handled
+
+| Protocol | Detection | Pass condition |
+|----------|-----------|----------------|
+| `$6000` (blargg) | Signature `DE B0 61` at `$6001-$6003`, then `$6000 != 0x80` | `$6000 == 0x00`. `0x81` triggers a 10-frame delay, `System::reset()`, and one more frame before re-checking. |
+| Zero page `$F8` (2005 sprite tests) | CPU parked on `jmp *` or a KIL opcode | `$F8 == 1` |
+| Screen only (`cpu_timing_test6`) | Same halt detection | Nametable 0 contains `PASSED` |
+| nestest | Instruction stepping with `trace_line` | Parsed PC/A/X/Y/P/SP (and CYC) equal for every log line |
+
+## Current status (v0.1.0, 2026-09-04)
+
+Legend: pass = runs green in `cargo test`; ignored = known failure, still
+compiled and runnable with `--include-ignored`.
+
+### nestest
+
+| Test | Status | Detail |
+|------|--------|--------|
+| `nestest_trace_format_matches_log_layout` | pass | Trace format pinned against log line 1 |
+| `nestest_registers_match_log_prefix` | pass | Lines 1-3639 match on PC/A/X/Y/P/SP |
+| `nestest_cycles_match_log_prefix` | pass | Lines 1-3639 also match on CYC |
+| `nestest_registers_match_log` | ignored | Line 3640: opcode `$B4` (LDY zp,X) unimplemented, PC advances by 1 |
+| `nestest_cycles_match_log` | ignored | Blocked by the same divergence |
+| `nestest_result_bytes_are_clear` | ignored | Run leaves the golden path before `$02`/`$03` are meaningful |
+
+### CPU bug found by the harness (not fixed in this lane)
+
+`cpu_step` in `src/system.rs` has no arm for opcode `$B4` (`LDY zp,X`),
+so it falls through to the "unimplemented" default, which consumes only
+the opcode byte. This single gap explains nestest line 3640,
+`instr_test-v5/05-zp_xy`, `official_only`, `all_instrs`, and
+`cpu_timing_test6` (`FAIL OP :$B4 / UNKNOWN ERROR`). All other 255
+opcodes have match arms. Separately, `07-abs_xy` reports `9C SYA abs,X`
+and `9E SXA abs,Y` (unofficial SHY/SHX) as wrong.
+
+### blargg suites
+
+| Suite | Pass | Ignored | Ignored tests (reason) |
+|-------|------|---------|------------------------|
+| instr_test-v5 (16 singles + 2 combined) | 14 | 4 | 05-zp_xy ($B4), 07-abs_xy (SHY/SHX), official_only, all_instrs |
+| cpu_timing_test6 | 0 | 1 | FAIL OP :$B4 |
+| cpu_interrupts_v2 (5 + 1) | 0 | 6 | no IRQ line: 1 fails #3 (APU IRQ), 2/3/5 hang, 4 wrong DMA offsets, combined fails in test 1 |
+| ppu_vbl_nmi (10 + 1) | 0 | 11 | 01 #8 VBL too long with BG off; 04 #11 NMI after next instruction; 02/03/05-10 hang in sync loop; combined fails in test 1 |
+| ppu_open_bus | 0 | 1 | #2 write should set decay value |
+| sprite_hit_tests_2005.10.05 (11) | 0 | 11 | 01 #7, 02 #2, 03 #2, 04 #2, 05 #4, 06 #3, 07 #6, 08 #3; 09/10/11 hang |
+| sprite_overflow_tests (5) | 1 | 4 | 1 #7, 2 #9, 4 #7, 3 hangs; 5.Emulator passes |
+| apu_test (8 + 1) | 0 | 9 | 1 #4, 2 length table, 3 #4 IRQ flag, 4 #4 jitter, 5 #3, 6 #2, 7 #2 DMC, 8 #2; combined fails in test 1 |
+| apu_reset (6) | 1 | 5 | 4015_cleared #2, 4017_timing #3, 4017_written #2, len_ctrs_enabled #3, works_immediately #2; irq_flag_cleared passes |
+| oam_read | 1 | 0 | |
+| oam_stress | 0 | 1 | every 4th OAM byte reads back wrong |
+| mmc3_test_2 (6) | 0 | 6 | IRQ counter never clocked: 1 #3, 2 #2, 3 #4, 5 #2, 6 #2; 4 hangs |
+| **Total blargg** | **17** | **59** | |
+
+Combined with nestest: 20 tests pass, 62 are ignored.
+
+### Expected progression
+
+| Phase | Suites expected to flip to pass |
+|-------|---------------------------------|
+| CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
+| Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, mmc3_test_2 1/2/4/5/6, apu_test 3, apu_reset |
+| Phase 4 (bus-tick timing) | nestest CYC, cpu_timing_test6, ppu_vbl_nmi, apu_test 1/2/4/5/6/8 |
+| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 3 |
+
+## Debug API reference (`src/system.rs`)
+
+| Method | Notes |
+|--------|-------|
+| `peek(addr) -> u8`, `peek_word(addr) -> u16` | Side-effect free. RAM, PRG RAM, PRG ROM only; `$2000-$5FFF` returns 0 because those registers have read side effects. |
+| `poke(addr, value)` | Writes RAM or PRG RAM only. |
+| `pc()`, `set_pc()`, `reg_a/x/y/sp/p()`, `set_reg_*()` | CPU register access. |
+| `total_cpu_cycles()`, `set_total_cpu_cycles()` | Monotonic cycle counter (separate from the per-frame budget). |
+| `step_instruction() -> u32` | One instruction plus its PPU (x3) and APU catch-up and NMI poll; drains a pending OAM DMA stall first. |
+| `trace_line() -> String` | Nintendulator-format line for the instruction at PC, without executing it. Register and CYC columns are exact; disassembly omits the `= value` annotations. |
+| `instruction_length(addr)` | Byte length from the addressing-mode table. |
+| `oam_dma_pending()` | True while a `$4014` stall is outstanding. |

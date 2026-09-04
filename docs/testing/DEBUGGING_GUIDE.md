@@ -87,6 +87,24 @@
 > `docs/plans/ACCURACY_ROADMAP.md` Phase 1 (GitHub issue #1). The sections
 > below are kept for historical reference only.
 
+### Tool 0: Headless test-ROM harness (`cargo test`)
+
+**Purpose**: Measure CPU/PPU/APU/mapper accuracy against nestest and the
+blargg test ROMs without a window. This is the first thing to run after
+any change to `src/system.rs`, `src/ppu/`, `src/apu/` or `src/cartridge/`.
+
+```bash
+cargo test                                    # suites expected to pass
+cargo test -- --include-ignored               # also the known failures
+cargo test --test nestest -- --nocapture      # first mismatching trace line
+```
+
+A failing blargg test prints the ROM's own diagnostic message (from
+`$6004` or the on-screen console); a failing nestest test prints the
+expected and actual Nintendulator-format trace line. Full details, the
+current pass/ignore table, and the debug API (`System::peek`,
+`step_instruction`, `trace_line`, ...) are in `TEST_ROM_HARNESS.md`.
+
 ### Tool 1: ROM Inspector (`rom-debug`)
 
 **Purpose**: Inspect ROM file structure and data
@@ -706,6 +724,16 @@ if let Some(ref cart) = system.cartridge {
 
 ## CPU Debugging
 
+### Instruction trace (preferred)
+
+`System::trace_line()` renders the instruction at the current PC in
+Nintendulator format (PC, opcode bytes, disassembly, A/X/Y/P/SP, PPU
+scanline/cycle, CYC) without executing it, and `System::step_instruction()`
+runs exactly one instruction with PPU/APU catch-up. The nestest test in
+`tests/nestest.rs` is the reference use: step, trace, compare to
+`test-roms/nestest/nestest.log`. To trace a game, load it the same way and
+print `trace_line()` in a loop. See `TEST_ROM_HARNESS.md`.
+
 ### Check CPU is Running
 
 **Add to `src/system.rs` (already present)**:
@@ -890,6 +918,7 @@ for i in (0..256).step_by(4) {
 
 ## See Also
 
+- `TEST_ROM_HARNESS.md` - Headless nestest/blargg harness, pass/ignore table, debug API
 - `PPU_FIXES_SUMMARY.md` - Technical details of PPU fixes
 - `TESTING_GUIDE.md` - Systematic testing procedures
 - `DEBUG_REFERENCE.md` - Debug features quick reference
