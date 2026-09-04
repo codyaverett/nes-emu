@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     log::info!("Loading ROM: {}", rom_path);
 
     let cartridge = Cartridge::load_from_file(rom_path)?;
-    log::info!("ROM loaded successfully. Mapper: {}", cartridge.mapper);
+    log::info!("ROM loaded successfully. Mapper: {}", cartridge.mapper_id);
 
     let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
     let video_subsystem = sdl_context

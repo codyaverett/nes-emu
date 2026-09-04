@@ -1,4 +1,4 @@
-use crate::cartridge::Mirroring;
+use crate::cartridge::{Mapper, Mirroring};
 use bitflags::bitflags;
 
 pub const SCREEN_WIDTH: usize = 256;
@@ -66,7 +66,9 @@ pub struct Ppu {
     pub oam_addr: u8,
     pub oam_data: [u8; 256],
     pub ppu_data_buffer: u8,
-    pub vram: [u8; 0x4000],
+    /// 4 KB of nametable RAM (2 KB CIRAM plus room for four-screen boards).
+    /// Pattern tables live in the cartridge and are read through `Mapper`.
+    pub nametable_ram: [u8; 0x1000],
     pub palette: [u8; 32],
 
     pub scanline: u16,
@@ -102,9 +104,6 @@ pub struct Ppu {
     sprite_positions: [u8; 8],
     sprite_priorities: [u8; 8],
     sprite_indexes: [u8; 8],
-
-    // Mirroring mode
-    pub mirroring: Mirroring,
 }
 
 impl Default for Ppu {
@@ -122,7 +121,7 @@ impl Ppu {
             oam_addr: 0,
             oam_data: [0; 256],
             ppu_data_buffer: 0,
-            vram: [0; 0x4000],
+            nametable_ram: [0; 0x1000],
             palette: [0; 32],
             scanline: 0,
             cycle: 0,
@@ -148,7 +147,6 @@ impl Ppu {
             sprite_positions: [0; 8],
             sprite_priorities: [0; 8],
             sprite_indexes: [0; 8],
-            mirroring: Mirroring::Horizontal,
         };
 
         // Initialize with default NES palette values
@@ -187,16 +185,16 @@ impl Ppu {
         self.nmi_interrupt = false;
     }
 
-    pub fn read_register(&mut self, address: u16) -> u8 {
+    pub fn read_register(&mut self, address: u16, mapper: &mut dyn Mapper) -> u8 {
         match address {
             0x2002 => self.read_status(),
             0x2004 => self.read_oam_data(),
-            0x2007 => self.read_ppu_data(),
+            0x2007 => self.read_ppu_data(mapper),
             _ => 0,
         }
     }
 
-    pub fn write_register(&mut self, address: u16, value: u8) {
+    pub fn write_register(&mut self, address: u16, value: u8, mapper: &mut dyn Mapper) {
         match address {
             0x2000 => self.write_ctrl(value),
             0x2001 => self.write_mask(value),
@@ -204,7 +202,7 @@ impl Ppu {
             0x2004 => self.write_oam_data(value),
             0x2005 => self.write_scroll(value),
             0x2006 => self.write_ppu_addr(value),
-            0x2007 => self.write_ppu_data(value),
+            0x2007 => self.write_ppu_data(value, mapper),
             _ => {}
         }
     }
@@ -220,15 +218,15 @@ impl Ppu {
         self.oam_data[self.oam_addr as usize]
     }
 
-    fn read_ppu_data(&mut self) -> u8 {
+    fn read_ppu_data(&mut self, mapper: &mut dyn Mapper) -> u8 {
         let addr = self.v & 0x3FFF;
         let result = if addr < 0x3F00 {
             let buffered = self.ppu_data_buffer;
-            self.ppu_data_buffer = self.read_vram(addr);
+            self.ppu_data_buffer = self.read_vram(addr, mapper);
             buffered
         } else {
-            self.ppu_data_buffer = self.read_vram(addr - 0x1000);
-            self.read_vram(addr)
+            self.ppu_data_buffer = self.read_vram(addr - 0x1000, mapper);
+            self.read_vram(addr, mapper)
         };
 
         if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) {
@@ -294,9 +292,9 @@ impl Ppu {
         self.w = !self.w;
     }
 
-    fn write_ppu_data(&mut self, value: u8) {
+    fn write_ppu_data(&mut self, value: u8, mapper: &mut dyn Mapper) {
         let addr = self.v & 0x3FFF;
-        self.write_vram(addr, value);
+        self.write_vram(addr, value, mapper);
 
         if self.ctrl.contains(PpuCtrl::VRAM_INCREMENT) {
             self.v = (self.v + 32) & 0x7FFF;
@@ -309,16 +307,16 @@ impl Ppu {
         self.oam_data.copy_from_slice(data);
     }
 
-    fn read_vram(&self, addr: u16) -> u8 {
+    fn read_vram(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
         match addr {
-            0x0000..=0x1FFF => self.vram[addr as usize],
+            0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x2FFF => {
-                let mirrored_addr = self.mirror_nametable_addr(addr);
-                self.vram[mirrored_addr as usize]
+                let index = self.mirror_nametable_addr(addr, mapper.mirroring());
+                self.nametable_ram[index as usize]
             }
             0x3000..=0x3EFF => {
                 // Mirror of 0x2000-0x2EFF
-                self.read_vram(addr - 0x1000)
+                self.read_vram(addr - 0x1000, mapper)
             }
             0x3F00..=0x3F1F => {
                 let palette_addr = (addr & 0x1F) as usize;
@@ -328,21 +326,21 @@ impl Ppu {
                     self.palette[palette_addr]
                 }
             }
-            0x3F20..=0x3FFF => self.read_vram(0x3F00 | (addr & 0x1F)),
+            0x3F20..=0x3FFF => self.read_vram(0x3F00 | (addr & 0x1F), mapper),
             _ => 0,
         }
     }
 
-    fn write_vram(&mut self, addr: u16, value: u8) {
+    fn write_vram(&mut self, addr: u16, value: u8, mapper: &mut dyn Mapper) {
         match addr {
-            0x0000..=0x1FFF => self.vram[addr as usize] = value,
+            0x0000..=0x1FFF => mapper.ppu_write(addr, value),
             0x2000..=0x2FFF => {
-                let mirrored_addr = self.mirror_nametable_addr(addr);
-                self.vram[mirrored_addr as usize] = value;
+                let index = self.mirror_nametable_addr(addr, mapper.mirroring());
+                self.nametable_ram[index as usize] = value;
             }
             0x3000..=0x3EFF => {
                 // Mirror of 0x2000-0x2EFF
-                self.write_vram(addr - 0x1000, value);
+                self.write_vram(addr - 0x1000, value, mapper);
             }
             0x3F00..=0x3F1F => {
                 let palette_addr = (addr & 0x1F) as usize;
@@ -352,16 +350,18 @@ impl Ppu {
                     self.palette[palette_addr] = value;
                 }
             }
-            0x3F20..=0x3FFF => self.write_vram(0x3F00 | (addr & 0x1F), value),
+            0x3F20..=0x3FFF => self.write_vram(0x3F00 | (addr & 0x1F), value, mapper),
             _ => {}
         }
     }
 
-    fn mirror_nametable_addr(&self, addr: u16) -> u16 {
+    /// Map a nametable address ($2000-$2FFF) to an index into `nametable_ram`
+    /// using the mirroring the mapper reports right now.
+    fn mirror_nametable_addr(&self, addr: u16, mirroring: Mirroring) -> u16 {
         let table = (addr - 0x2000) / 0x400;
         let offset = (addr - 0x2000) % 0x400;
 
-        let mirrored_table = match self.mirroring {
+        let mirrored_table = match mirroring {
             Mirroring::Horizontal => {
                 // 0,1 -> 0; 2,3 -> 1
                 match table {
@@ -382,20 +382,20 @@ impl Ppu {
                 // Each table is separate (no mirroring)
                 table & 0x03
             }
-            Mirroring::_SingleScreenLower => {
+            Mirroring::SingleScreenLower => {
                 // All tables map to table 0
                 0
             }
-            Mirroring::_SingleScreenUpper => {
+            Mirroring::SingleScreenUpper => {
                 // All tables map to table 1
                 1
             }
         };
 
-        0x2000 + mirrored_table * 0x400 + offset
+        mirrored_table * 0x400 + offset
     }
 
-    pub fn step(&mut self) {
+    pub fn step(&mut self, mapper: &mut dyn Mapper) {
         self.cycle += 1;
 
         let rendering_enabled =
@@ -419,7 +419,7 @@ impl Ppu {
 
             // Sprite fetching happens during cycles 257-320
             if self.cycle == 257 && self.mask.contains(PpuMask::SHOW_SPRITES) {
-                self.fetch_sprites();
+                self.fetch_sprites(mapper);
             }
 
             // Background rendering with cycle-accurate tile fetching
@@ -438,19 +438,19 @@ impl Ppu {
                         }
                         1 => {
                             // Fetch nametable byte (tile ID)
-                            self.fetch_nametable_byte();
+                            self.fetch_nametable_byte(mapper);
                         }
                         3 => {
                             // Fetch attribute byte (palette)
-                            self.fetch_attribute_byte();
+                            self.fetch_attribute_byte(mapper);
                         }
                         5 => {
                             // Fetch pattern table low byte
-                            self.fetch_pattern_low();
+                            self.fetch_pattern_low(mapper);
                         }
                         7 => {
                             // Fetch pattern table high byte
-                            self.fetch_pattern_high();
+                            self.fetch_pattern_high(mapper);
 
                             // Increment coarse X after fetching a complete tile
                             if self.cycle < 256 {
@@ -510,16 +510,16 @@ impl Ppu {
                             self.load_background_shifters();
                         }
                         1 => {
-                            self.fetch_nametable_byte();
+                            self.fetch_nametable_byte(mapper);
                         }
                         3 => {
-                            self.fetch_attribute_byte();
+                            self.fetch_attribute_byte(mapper);
                         }
                         5 => {
-                            self.fetch_pattern_low();
+                            self.fetch_pattern_low(mapper);
                         }
                         7 => {
-                            self.fetch_pattern_high();
+                            self.fetch_pattern_high(mapper);
                             if self.cycle < 256 {
                                 self.increment_x();
                             }
@@ -666,19 +666,19 @@ impl Ppu {
     }
 
     // Tile fetch pipeline functions
-    fn fetch_nametable_byte(&mut self) {
+    fn fetch_nametable_byte(&mut self, mapper: &mut dyn Mapper) {
         // Fetch tile ID from nametable
         // Nametable address: 0x2000 | (v & 0x0FFF)
         let addr = 0x2000 | (self.v & 0x0FFF);
-        self.bg_next_tile_id = self.read_vram(addr);
+        self.bg_next_tile_id = self.read_vram(addr, mapper);
     }
 
-    fn fetch_attribute_byte(&mut self) {
+    fn fetch_attribute_byte(&mut self, mapper: &mut dyn Mapper) {
         // Fetch attribute byte from attribute table
         // Attribute address: 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07)
         let v = self.v;
         let addr = 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
-        let attribute = self.read_vram(addr);
+        let attribute = self.read_vram(addr, mapper);
 
         // Determine which 2 bits of the attribute byte to use
         // based on the 2x2 tile position within the 4x4 tile group
@@ -690,7 +690,7 @@ impl Ppu {
         self.bg_next_tile_attrib = (attribute >> shift) & 0x03;
     }
 
-    fn fetch_pattern_low(&mut self) {
+    fn fetch_pattern_low(&mut self, mapper: &mut dyn Mapper) {
         // Fetch low pattern byte from pattern table
         // Pattern table address: (ctrl.bg_pattern * 0x1000) + (tile_id * 16) + fine_y
         let pattern_table = if self.ctrl.contains(PpuCtrl::BG_PATTERN) {
@@ -700,10 +700,10 @@ impl Ppu {
         };
         let fine_y = (self.v >> 12) & 0x07;
         let addr = pattern_table + (self.bg_next_tile_id as u16 * 16) + fine_y;
-        self.bg_next_tile_lsb = self.read_vram(addr);
+        self.bg_next_tile_lsb = self.read_vram(addr, mapper);
     }
 
-    fn fetch_pattern_high(&mut self) {
+    fn fetch_pattern_high(&mut self, mapper: &mut dyn Mapper) {
         // Fetch high pattern byte from pattern table
         // Pattern table address: (ctrl.bg_pattern * 0x1000) + (tile_id * 16) + fine_y + 8
         let pattern_table = if self.ctrl.contains(PpuCtrl::BG_PATTERN) {
@@ -713,7 +713,7 @@ impl Ppu {
         };
         let fine_y = (self.v >> 12) & 0x07;
         let addr = pattern_table + (self.bg_next_tile_id as u16 * 16) + fine_y + 8;
-        self.bg_next_tile_msb = self.read_vram(addr);
+        self.bg_next_tile_msb = self.read_vram(addr, mapper);
     }
 
     // Shifter update functions
@@ -841,7 +841,7 @@ impl Ppu {
         }
     }
 
-    fn fetch_sprites(&mut self) {
+    fn fetch_sprites(&mut self, mapper: &mut dyn Mapper) {
         let sprite_height = if self.ctrl.contains(PpuCtrl::SPRITE_SIZE) {
             16
         } else {
@@ -888,8 +888,8 @@ impl Ppu {
             };
 
             // Fetch pattern data
-            let low_byte = self.vram[(pattern_addr & 0x1FFF) as usize];
-            let high_byte = self.vram[((pattern_addr + 8) & 0x1FFF) as usize];
+            let low_byte = mapper.ppu_read(pattern_addr & 0x1FFF);
+            let high_byte = mapper.ppu_read((pattern_addr + 8) & 0x1FFF);
 
             // Handle horizontal flip
             let (low, high) = if (attributes & 0x40) != 0 {
@@ -1013,3 +1013,105 @@ const NES_PALETTE: [(u8, u8, u8); 64] = [
     (0x11, 0x11, 0x11),
     (0x11, 0x11, 0x11),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cartridge::mapper3::Mapper3;
+    use crate::cartridge::mapper4::Mapper4;
+    use crate::cartridge::Cartridge;
+
+    fn tagged_chr(banks: usize) -> Vec<u8> {
+        let mut chr = Vec::new();
+        for bank in 0..banks {
+            chr.extend(vec![0x10 + bank as u8; 0x2000]);
+        }
+        chr
+    }
+
+    /// Set the VRAM address through $2006 and read $2007 twice (the first
+    /// read only fills the buffer for addresses below the palette).
+    fn read_ppu_addr(ppu: &mut Ppu, mapper: &mut dyn Mapper, addr: u16) -> u8 {
+        ppu.write_register(0x2006, (addr >> 8) as u8, mapper);
+        ppu.write_register(0x2006, addr as u8, mapper);
+        ppu.read_register(0x2007, mapper);
+        ppu.read_register(0x2007, mapper)
+    }
+
+    fn write_ppu_addr(ppu: &mut Ppu, mapper: &mut dyn Mapper, addr: u16, value: u8) {
+        ppu.write_register(0x2006, (addr >> 8) as u8, mapper);
+        ppu.write_register(0x2006, addr as u8, mapper);
+        ppu.write_register(0x2007, value, mapper);
+    }
+
+    #[test]
+    fn pattern_table_reads_follow_chr_bank_switch() {
+        let mut ppu = Ppu::new();
+        let mut mapper = Mapper3::new(vec![0; 0x8000], tagged_chr(2), Mirroring::Vertical);
+
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0000), 0x10);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x1FFF), 0x10);
+
+        mapper.cpu_write(0x8000, 1);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0000), 0x11);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x1FFF), 0x11);
+    }
+
+    #[test]
+    fn chr_ram_writes_go_through_the_mapper() {
+        let mut ppu = Ppu::new();
+        let cart = Cartridge::build_mapper(0, vec![0; 0x8000], vec![], Mirroring::Vertical);
+        let mut mapper = cart;
+
+        write_ppu_addr(&mut ppu, mapper.as_mut(), 0x0123, 0xA5);
+        assert_eq!(mapper.ppu_read(0x0123), 0xA5);
+        assert_eq!(read_ppu_addr(&mut ppu, mapper.as_mut(), 0x0123), 0xA5);
+    }
+
+    #[test]
+    fn background_fetch_uses_mapper_pattern_bytes() {
+        let mut ppu = Ppu::new();
+        let mut mapper = Mapper3::new(vec![0; 0x8000], tagged_chr(2), Mirroring::Vertical);
+        ppu.bg_next_tile_id = 0x05;
+        ppu.v = 0;
+
+        ppu.fetch_pattern_low(&mut mapper);
+        ppu.fetch_pattern_high(&mut mapper);
+        assert_eq!((ppu.bg_next_tile_lsb, ppu.bg_next_tile_msb), (0x10, 0x10));
+
+        mapper.cpu_write(0x8000, 1);
+        ppu.fetch_pattern_low(&mut mapper);
+        ppu.fetch_pattern_high(&mut mapper);
+        assert_eq!((ppu.bg_next_tile_lsb, ppu.bg_next_tile_msb), (0x11, 0x11));
+    }
+
+    #[test]
+    fn nametable_mirroring_is_queried_per_access() {
+        let mut ppu = Ppu::new();
+        let mut mapper = Mapper4::new(vec![0; 0x8000], tagged_chr(1), Mirroring::Vertical);
+
+        // Vertical: $2000 and $2800 share a table; $2400 is separate
+        write_ppu_addr(&mut ppu, &mut mapper, 0x2000, 0x11);
+        write_ppu_addr(&mut ppu, &mut mapper, 0x2400, 0x22);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x2800), 0x11);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x2C00), 0x22);
+
+        // Switch the MMC3 to horizontal: $2000 and $2400 now share a table
+        mapper.cpu_write(0xA000, 1);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x2400), 0x11);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x2800), 0x22);
+    }
+
+    #[test]
+    fn mirror_nametable_addr_modes() {
+        let ppu = Ppu::new();
+        let a = |m: Mirroring, addr: u16| ppu.mirror_nametable_addr(addr, m);
+        assert_eq!(a(Mirroring::Horizontal, 0x2400), 0x000);
+        assert_eq!(a(Mirroring::Horizontal, 0x2800), 0x400);
+        assert_eq!(a(Mirroring::Vertical, 0x2400), 0x400);
+        assert_eq!(a(Mirroring::Vertical, 0x2800), 0x000);
+        assert_eq!(a(Mirroring::SingleScreenLower, 0x2C05), 0x005);
+        assert_eq!(a(Mirroring::SingleScreenUpper, 0x2005), 0x405);
+        assert_eq!(a(Mirroring::FourScreen, 0x2C00), 0xC00);
+    }
+}

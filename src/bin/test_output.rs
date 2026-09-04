@@ -13,7 +13,7 @@ fn main() {
     println!("Loading ROM: {}", rom_path);
 
     let cartridge = Cartridge::load_from_file(rom_path).unwrap();
-    println!("ROM loaded. Mapper: {}", cartridge.mapper);
+    println!("ROM loaded. Mapper: {}", cartridge.mapper_id);
 
     let mut system = System::new();
     system.load_cartridge(cartridge);

@@ -1,5 +1,5 @@
 use crate::apu::Apu;
-use crate::cartridge::Cartridge;
+use crate::cartridge::{Cartridge, Mapper, NullMapper};
 use crate::input::Controller;
 use crate::ppu::Ppu;
 use std::collections::VecDeque;
@@ -24,6 +24,8 @@ pub struct System {
     pub controller1: Controller,
     pub controller2: Controller,
     pub cartridge: Option<Cartridge>,
+    /// Stand-in mapper handed to the PPU while no cartridge is loaded.
+    null_mapper: NullMapper,
     cycles: u64,
     oam_dma_cycles: u16,
     audio_sample_counter: f64,
@@ -61,6 +63,7 @@ impl System {
             controller1: Controller::new(),
             controller2: Controller::new(),
             cartridge: None,
+            null_mapper: NullMapper,
             cycles: 0,
             oam_dma_cycles: 0,
             audio_sample_counter: 0.0,
@@ -87,9 +90,9 @@ impl System {
         log::info!("Reset CPU, PC set to: 0x{:04X}", self.cpu_pc);
 
         // Log first few bytes at reset vector for debugging
-        if let Some(ref cart) = self.cartridge {
-            let vec_lo = cart.read_prg(0x7FFC);
-            let vec_hi = cart.read_prg(0x7FFD);
+        if let Some(ref mut cart) = self.cartridge {
+            let vec_lo = cart.mapper.cpu_read(0xFFFC);
+            let vec_hi = cart.mapper.cpu_read(0xFFFD);
             log::info!(
                 "Reset vector bytes: 0x{:02X} 0x{:02X} => PC: 0x{:04X}",
                 vec_lo,
@@ -100,29 +103,28 @@ impl System {
     }
 
     pub fn load_cartridge(&mut self, cartridge: Cartridge) {
-        // Set mirroring mode from cartridge
-        self.ppu.mirroring = cartridge._mirroring;
-
-        // Copy CHR ROM to PPU VRAM pattern tables if CHR ROM exists
-        if !cartridge.chr_rom.is_empty() {
-            for i in 0..cartridge.chr_rom.len().min(0x2000) {
-                self.ppu.vram[i] = cartridge.chr_rom[i];
-            }
-        } else {
-            // CHR RAM: Initialize pattern tables to zero (will be written by game)
-            for i in 0..0x2000 {
-                self.ppu.vram[i] = 0;
-            }
-        }
-
+        // Pattern tables and mirroring are served by the cartridge mapper on
+        // every PPU access, so nothing is copied into the PPU here.
         self.cartridge = Some(cartridge);
         self.reset();
+    }
+
+    /// Split borrow: the PPU and the mapper it should talk to for this access.
+    fn ppu_and_mapper(&mut self) -> (&mut Ppu, &mut dyn Mapper) {
+        let mapper: &mut dyn Mapper = match self.cartridge.as_mut() {
+            Some(cart) => cart.mapper.as_mut(),
+            None => &mut self.null_mapper,
+        };
+        (&mut self.ppu, mapper)
     }
 
     fn read_byte(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize],
-            0x2000..=0x3FFF => self.ppu.read_register(0x2000 | (addr & 0x0007)),
+            0x2000..=0x3FFF => {
+                let (ppu, mapper) = self.ppu_and_mapper();
+                ppu.read_register(0x2000 | (addr & 0x0007), mapper)
+            }
             0x4000..=0x4015 => self.apu.read_register(addr),
             0x4016 => {
                 let value = self.controller1.read();
@@ -133,20 +135,10 @@ impl System {
                 // Controller 2 not connected, return 0
                 0x00
             }
-            0x6000..=0x7FFF => {
-                if let Some(ref cart) = self.cartridge {
-                    cart.prg_ram[(addr - 0x6000) as usize]
-                } else {
-                    0
-                }
-            }
-            0x8000..=0xFFFF => {
-                if let Some(ref cart) = self.cartridge {
-                    cart.read_prg(addr - 0x8000)
-                } else {
-                    0
-                }
-            }
+            0x4020..=0xFFFF => match self.cartridge {
+                Some(ref mut cart) => cart.mapper.cpu_read(addr),
+                None => 0,
+            },
             _ => 0,
         }
     }
@@ -154,7 +146,10 @@ impl System {
     fn write_byte(&mut self, addr: u16, value: u8) {
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize] = value,
-            0x2000..=0x3FFF => self.ppu.write_register(0x2000 | (addr & 0x0007), value),
+            0x2000..=0x3FFF => {
+                let (ppu, mapper) = self.ppu_and_mapper();
+                ppu.write_register(0x2000 | (addr & 0x0007), value, mapper)
+            }
             0x4000..=0x4013 | 0x4015 => self.apu.write_register(addr, value),
             0x4014 => {
                 // OAM DMA - Direct Memory Access to PPU OAM
@@ -176,14 +171,9 @@ impl System {
                 // Controller 2 strobe is handled but we don't have a second controller
             }
             0x4017 => self.apu.write_register(addr, value),
-            0x6000..=0x7FFF => {
+            0x4020..=0xFFFF => {
                 if let Some(ref mut cart) = self.cartridge {
-                    cart.prg_ram[(addr - 0x6000) as usize] = value;
-                }
-            }
-            0x8000..=0xFFFF => {
-                if let Some(ref mut cart) = self.cartridge {
-                    cart.write_prg(addr - 0x8000, value);
+                    cart.mapper.cpu_write(addr, value);
                 }
             }
             _ => {}
@@ -2641,7 +2631,8 @@ impl System {
     }
 
     fn ppu_step(&mut self) {
-        self.ppu.step();
+        let (ppu, mapper) = self.ppu_and_mapper();
+        ppu.step(mapper);
     }
 
     /// Poll the interrupt inputs at an instruction boundary and service one
