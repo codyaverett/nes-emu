@@ -55,26 +55,31 @@ pub mapper_irq: bool,
 Both are initialised in `new()` and cleared in `reset()`.
 
 ### 2. The polling point
-**File:** `src/system.rs`, top of `cpu_step` (after the OAM DMA early-return)
+**File:** `src/system.rs`, top of `cpu_step`
 
 ```rust
-if let Some(cycles) = self.poll_interrupts() {
-    return cycles;
-}
+let declared = match self.poll_interrupts() {
+    Some(cycles) => cycles as u16,
+    None => self.execute_opcode() as u16,
+};
 ```
 
-**Why the top of `cpu_step` and not the bottom:** the frame loop is
-`cpu_step` -> PPU dots -> APU cycles. The state that raises an interrupt is
-produced *after* `cpu_step` returns, so a poll at the bottom of `cpu_step`
-would see pre-tick state and land every interrupt one instruction late. The
-start of `cpu_step` N+1 is exactly "end of instruction N" from the CPU's point
-of view. Placing it after the DMA early-return also makes interrupts wait out
-an OAM DMA stall, which is what hardware does. When Phase 4 moves the PPU/APU
-ticks inside the instruction (bus-tick refactor), this spot still sees fully
-ticked state, so it does not need to move.
+The poll runs at the boundary between the previous instruction and the next
+opcode fetch. Since the bus-tick change (docs/debugging/BUS_TICK_TIMING.md,
+issue 4) every cycle of the previous instruction has already been ticked by
+the time `cpu_step` is entered again, so the PPU NMI latch and the APU and
+mapper IRQ levels seen here are the ones at that boundary. An OAM DMA runs to
+completion inside the `$4014` write, so interrupts wait out the DMA as on
+hardware. (Before issue 4 the frame loop ticked the PPU and APU after
+`cpu_step` returned, which is why the poll was placed at the top rather than
+the bottom of the function; that reasoning no longer applies but the spot is
+still the right one.)
 
-The interrupt sequence returns 7 cycles so the PPU and APU catch up correctly
-in the frame loop.
+Hardware actually samples the interrupt inputs during the penultimate cycle
+of each instruction, not at the boundary; that refinement is issue 10.
+
+The interrupt sequence declares 7 cycles; `cpu_step` pads the two cycles that
+the five bus accesses (three pushes, two vector reads) do not cover.
 
 ### 3. `poll_interrupts`: edge vs level
 **File:** `src/system.rs`, `fn poll_interrupts` (near line 2655)
