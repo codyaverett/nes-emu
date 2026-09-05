@@ -198,11 +198,16 @@ impl System {
     fn tick(&mut self) {
         self.total_cycles += 1;
         self.instr_cycles += 1;
-        for _ in 0..3 {
-            self.ppu_step();
-        }
+        // The CPU samples its NMI input late in each cycle, which on the
+        // PPU side lands one dot into the following cycle. So the first dot
+        // of this tick still belongs to the previous cycle's NMI sample
+        // (ppu_vbl_nmi 05-08 measure this to the dot).
+        self.ppu_step();
+        self.sample_nmi_input_for_previous_cycle();
+        self.ppu_step();
+        self.ppu_step();
         self.apu.step();
-        self.sample_interrupt_inputs();
+        self.sample_irq_input();
 
         if self.audio_capture {
             const CYCLES_PER_SAMPLE: f64 = 1_789_773.0 / 44_100.0;
@@ -217,6 +222,12 @@ impl System {
 
     fn read_byte(&mut self, addr: u16) -> u8 {
         self.tick();
+        // NMI is sampled one dot into the next tick (see `tick`), so an
+        // access that drops the line here withdraws the edge in time.
+        self.bus_read(addr)
+    }
+
+    fn bus_read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => {
@@ -243,6 +254,10 @@ impl System {
 
     fn write_byte(&mut self, addr: u16, value: u8) {
         self.tick();
+        self.bus_write(addr, value);
+    }
+
+    fn bus_write(&mut self, addr: u16, value: u8) {
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize] = value,
             0x2000..=0x3FFF => {
@@ -381,16 +396,34 @@ impl System {
 
     /// Capture the interrupt inputs at this tick. Called from `tick` after
     /// the PPU and APU have advanced and before the tick's bus access.
-    fn sample_interrupt_inputs(&mut self) {
+    /// NMI is sampled at the end of the CPU cycle, after the bus access, so
+    /// an access that drops the PPU's NMI line in the same cycle the line
+    /// rose (a `$2002` read or an NMI-disable write) withdraws the edge
+    /// before the CPU sees it. Called after every bus access and after
+    /// every padding tick.
+    /// See `tick`: the NMI input is sampled one dot into the following
+    /// cycle and attributed to the cycle before it, so the PPU has had that
+    /// dot to withdraw an edge that a `$2002` read or `$2000` write made
+    /// moot. At the start of an instruction that is tick 0, which the
+    /// snapshot treats as "already pending when the instruction began".
+    fn sample_nmi_input_for_previous_cycle(&mut self) {
+        let tick = self.instr_cycles.saturating_sub(1);
+        self.latch_nmi_edge(tick);
+    }
+
+    fn latch_nmi_edge(&mut self, tick: u16) {
         if self.ppu.nmi_interrupt {
             self.ppu.nmi_interrupt = false;
             // A second edge before the first is serviced is dropped, as on
             // hardware; only the first one's tick is remembered.
             if !self.nmi_pending {
                 self.nmi_pending = true;
-                self.nmi_seen_tick = self.instr_cycles;
+                self.nmi_seen_tick = tick;
             }
         }
+    }
+
+    fn sample_irq_input(&mut self) {
         if self.instr_cycles <= 16 && self.irq_line() {
             self.irq_hist |= 1 << (self.instr_cycles - 1);
         }

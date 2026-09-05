@@ -191,8 +191,7 @@ blargg_test!(
 blargg_test!(
     cpu_interrupts_3_nmi_and_irq,
     "cpu_interrupts_v2/rom_singles/3-nmi_and_irq.nes",
-    SHORT,
-    ignore = "rows shifted one cycle (NMI seen one cycle late after a two-frame wait since sync_vbl); needs exact vblank flag/NMI dot and $2002 read alignment, see ppu_vbl_nmi 02; Phase 5"
+    SHORT
 );
 blargg_test!(
     cpu_interrupts_4_irq_and_dma,
@@ -224,8 +223,7 @@ blargg_test!(
 blargg_test!(
     ppu_vbl_nmi_02_vbl_set_time,
     "ppu_vbl_nmi/rom_singles/02-vbl_set_time.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_03_vbl_clear_time,
@@ -240,45 +238,34 @@ blargg_test!(
 blargg_test!(
     ppu_vbl_nmi_05_nmi_timing,
     "ppu_vbl_nmi/rom_singles/05-nmi_timing.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_06_suppression,
     "ppu_vbl_nmi/rom_singles/06-suppression.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_07_nmi_on_timing,
     "ppu_vbl_nmi/rom_singles/07-nmi_on_timing.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_08_nmi_off_timing,
     "ppu_vbl_nmi/rom_singles/08-nmi_off_timing.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_09_even_odd_frames,
     "ppu_vbl_nmi/rom_singles/09-even_odd_frames.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4/5"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_10_even_odd_timing,
     "ppu_vbl_nmi/rom_singles/10-even_odd_timing.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4/5"
+    SHORT
 );
-blargg_test!(
-    ppu_vbl_nmi_all,
-    "ppu_vbl_nmi/ppu_vbl_nmi.nes",
-    MEDIUM,
-    ignore = "fails in test 1 of 10 (VBL period too long with BG off); Phase 4"
-);
+blargg_test!(ppu_vbl_nmi_all, "ppu_vbl_nmi/ppu_vbl_nmi.nes", MEDIUM);
 
 // ---------------------------------------------------------------------
 // ppu_open_bus

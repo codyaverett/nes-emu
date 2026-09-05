@@ -2,6 +2,24 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.6.0] - 2026-09-05
+
+Closes issue 12. Test ROM status: 49 of 76 blargg suites pass (was 40).
+
+### Fixed
+- NMI is modelled as a level line whose rising edge can be withdrawn if a
+  2002 read or NMI-disable write drops it before the CPU samples it, giving
+  hardware-exact NMI suppression. A 2002 read one dot before the vblank flag
+  would be set now suppresses the flag for that frame.
+- The CPU samples NMI one PPU dot into the following cycle, matching the
+  hardware sample point measured by ppu_vbl_nmi 05-08.
+- Odd frames with rendering enabled skip the last dot of the pre-render
+  line, decided at dot 338.
+- All eleven ppu_vbl_nmi tests and cpu_interrupts_v2 3 pass. No commercial
+  ROM fingerprint changed. See docs/debugging/VBLANK_NMI_TIMING.md.
+
+---
+
 ## [0.5.0] - 2026-09-05
 
 Accuracy wave 3. Closes issues 10, 13 and 14. Test ROM status: 40 of 76 blargg

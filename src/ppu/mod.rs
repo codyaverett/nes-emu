@@ -99,7 +99,16 @@ pub struct Ppu {
     io_bus_stamp: [u64; 8],
 
     pub frame_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
+    /// Rising edge of the NMI output line, held until the CPU samples it.
+    /// The line itself is `VBLANK_STARTED && NMI_ENABLE`; if the line drops
+    /// again before the CPU has sampled the edge (a `$2002` read or an NMI
+    /// disable in the same CPU cycle) the edge is withdrawn, which is what
+    /// makes NMI suppression work.
     pub nmi_interrupt: bool,
+    nmi_line: bool,
+    /// Set by a `$2002` read on the dot just before the vblank flag would be
+    /// set: that frame's flag (and therefore its NMI) never appears.
+    suppress_vbl: bool,
 
     // PPU internal registers for scrolling
     v: u16,  // Current VRAM address (15 bits)
@@ -155,6 +164,8 @@ impl Ppu {
             io_bus_stamp: [0; 8],
             frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
             nmi_interrupt: false,
+            nmi_line: false,
+            suppress_vbl: false,
             v: 0,
             t: 0,
             x: 0,
@@ -214,6 +225,8 @@ impl Ppu {
         self.bg_next_tile_lsb = 0;
         self.bg_next_tile_msb = 0;
         self.nmi_interrupt = false;
+        self.nmi_line = false;
+        self.suppress_vbl = false;
     }
 
     pub fn read_register(&mut self, address: u16, mapper: &mut dyn Mapper) -> u8 {
@@ -293,10 +306,31 @@ impl Ppu {
     }
 
     fn read_status(&mut self) -> u8 {
+        // Reading one dot before the flag is set returns it clear and stops
+        // it from being set at all this frame. Reading on the dot it is set
+        // or the one after returns it set, and the read clears it before the
+        // CPU samples the NMI line, so no NMI occurs (`update_nmi_line`).
+        if self.scanline == 241 && self.cycle == 0 {
+            self.suppress_vbl = true;
+        }
         let result = self.status.bits();
         self.status.remove(PpuStatus::VBLANK_STARTED);
         self.w = false; // Clear write latch
+        self.update_nmi_line();
         result
+    }
+
+    /// Recompute the NMI output line and latch a rising edge for the CPU.
+    /// A falling edge withdraws an edge the CPU has not sampled yet.
+    fn update_nmi_line(&mut self) {
+        let line = self.status.contains(PpuStatus::VBLANK_STARTED)
+            && self.ctrl.contains(PpuCtrl::NMI_ENABLE);
+        if line && !self.nmi_line {
+            self.nmi_interrupt = true;
+        } else if !line {
+            self.nmi_interrupt = false;
+        }
+        self.nmi_line = line;
     }
 
     /// $2004 read. Never modifies OAMADDR.
@@ -335,15 +369,10 @@ impl Ppu {
     }
 
     fn write_ctrl(&mut self, value: u8) {
-        let prev_nmi = self.ctrl.contains(PpuCtrl::NMI_ENABLE);
         self.ctrl = PpuCtrl::from_bits_truncate(value);
-
-        if !prev_nmi
-            && self.ctrl.contains(PpuCtrl::NMI_ENABLE)
-            && self.status.contains(PpuStatus::VBLANK_STARTED)
-        {
-            self.nmi_interrupt = true;
-        }
+        // Enabling NMI while the flag is set raises the line immediately;
+        // disabling it drops the line and withdraws an unsampled edge.
+        self.update_nmi_line();
 
         // Set nametable bits in temporary address
         self.t = (self.t & !0x0C00) | ((value as u16 & 0x03) << 10);
@@ -649,16 +678,18 @@ impl Ppu {
                 }
             }
         } else if self.scanline == 241 && self.cycle == 1 {
-            self.status.insert(PpuStatus::VBLANK_STARTED);
-            if self.ctrl.contains(PpuCtrl::NMI_ENABLE) {
-                self.nmi_interrupt = true;
+            if !self.suppress_vbl {
+                self.status.insert(PpuStatus::VBLANK_STARTED);
             }
+            self.suppress_vbl = false;
+            self.update_nmi_line();
         } else if self.scanline == 261 {
             // Pre-render scanline (261) - prepares for next frame
             if self.cycle == 1 {
                 self.status.remove(PpuStatus::VBLANK_STARTED);
                 self.status.remove(PpuStatus::SPRITE_ZERO_HIT);
                 self.status.remove(PpuStatus::SPRITE_OVERFLOW);
+                self.update_nmi_line();
             }
 
             // Pre-render scanline updates
@@ -715,6 +746,12 @@ impl Ppu {
                     self.copy_y();
                 }
             }
+        }
+
+        // Odd frames with rendering enabled are one dot short: the last dot
+        // of the pre-render line is skipped.
+        if self.scanline == 261 && self.cycle == 338 && self.frame % 2 == 1 && rendering_enabled {
+            self.cycle = 339;
         }
 
         if self.cycle >= 341 {
