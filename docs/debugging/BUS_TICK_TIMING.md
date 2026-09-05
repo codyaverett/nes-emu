@@ -92,7 +92,9 @@ inside it.
 
 - `cpu_interrupts_v2` needs interrupts sampled on the penultimate cycle of
   each instruction (and branch-specific behaviour), not at the boundary.
-  Tracked separately.
+  Landed as issue 10; see docs/debugging/INTERRUPT_LINE.md, "Sampling
+  Point". Tests 1, 2 and 4 pass; 3 and 5 wait on PPU vblank alignment and
+  APU frame-flag timing respectively.
 - `ppu_vbl_nmi` 02 and 05-10 need exact vblank set/clear dots and NMI
   suppression; `apu_test` 1, 5 and 6 need exact length-counter and IRQ
   flag timing. Both are Phase 5 material now that the bus is cycle-exact.

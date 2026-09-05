@@ -181,38 +181,36 @@ screen_test!(
 blargg_test!(
     cpu_interrupts_1_cli_latency,
     "cpu_interrupts_v2/rom_singles/1-cli_latency.nes",
-    SHORT,
-    ignore = "#3 APU should generate IRQ when $4017 = $00 (no IRQ line); Phase 3"
+    SHORT
 );
 blargg_test!(
     cpu_interrupts_2_nmi_and_brk,
     "cpu_interrupts_v2/rom_singles/2-nmi_and_brk.nes",
-    SHORT,
-    ignore = "hangs after printing NMI BRK header (no IRQ line); Phase 3"
+    SHORT
 );
 blargg_test!(
     cpu_interrupts_3_nmi_and_irq,
     "cpu_interrupts_v2/rom_singles/3-nmi_and_irq.nes",
     SHORT,
-    ignore = "hangs after printing NMI BRK header (no IRQ line); Phase 3"
+    ignore = "rows shifted one cycle (NMI seen one cycle late after a two-frame wait since sync_vbl); needs exact vblank flag/NMI dot and $2002 read alignment, see ppu_vbl_nmi 02; Phase 5"
 );
 blargg_test!(
     cpu_interrupts_4_irq_and_dma,
     "cpu_interrupts_v2/rom_singles/4-irq_and_dma.nes",
-    SHORT,
-    ignore = "fails, prints constant 53 for every DMA offset (no IRQ line, DMA not cycle-stepped); Phase 3/4"
+    SHORT
 );
 blargg_test!(
     cpu_interrupts_5_branch_delays_irq,
     "cpu_interrupts_v2/rom_singles/5-branch_delays_irq.nes",
     SHORT,
-    ignore = "hangs in test_jmp (no IRQ line); Phase 3"
+    ignore = "PC column (which instruction the IRQ followed) matches for test_jmp, CK column is constant 05/06: the handler measures phase against the APU frame flag, which needs the exact 29830-cycle period and 3-cycle flag window (apu_test 6); Phase 5"
 );
 blargg_test!(
     cpu_interrupts_all,
     "cpu_interrupts_v2/cpu_interrupts.nes",
     MEDIUM,
-    ignore = "fails in test 1 of 5 (APU frame IRQ never generated); Phase 3"
+    ignore =
+        "fails in test 3 of 5 (see cpu_interrupts_3_nmi_and_irq); 1, 2 and 4 pass individually; Phase 5"
 );
 
 // ---------------------------------------------------------------------
@@ -237,8 +235,7 @@ blargg_test!(
 blargg_test!(
     ppu_vbl_nmi_04_nmi_control,
     "ppu_vbl_nmi/rom_singles/04-nmi_control.nes",
-    SHORT,
-    ignore = "#11 Immediate occurence should be after NEXT instruction; Phase 3/4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_05_nmi_timing,

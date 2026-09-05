@@ -129,8 +129,8 @@ arms, so the unimplemented-opcode fallback was removed.
 |-------|------|---------|------------------------|
 | instr_test-v5 (16 singles + 2 combined) | 18 | 0 | |
 | cpu_timing_test6 | 1 | 0 | |
-| cpu_interrupts_v2 (5 + 1) | 0 | 6 | no IRQ line: 1 fails #3 (APU IRQ), 2/3/5 hang, 4 wrong DMA offsets, combined fails in test 1 |
-| ppu_vbl_nmi (10 + 1) | 2 | 9 | 01 and 03 pass since bus-tick timing (Phase 4); 04 #11 NMI after next instruction; 02/05-10 need exact vblank dots (Phase 5) |
+| cpu_interrupts_v2 (5 + 1) | 3 | 3 | 1, 2 and 4 pass since the sampling point landed (issue 10); 3 rows shifted one cycle (PPU vblank/$2002 alignment after a two-frame wait); 5 PC column right, CK column needs exact APU frame-flag timing (as apu_test 6); combined stops at 3 |
+| ppu_vbl_nmi (10 + 1) | 3 | 8 | 01 and 03 pass since bus-tick timing (Phase 4), 04 since issue 10; 02/05-10 need exact vblank dots (Phase 5) |
 | ppu_open_bus | 1 | 0 | passes since issues 13 (decay latch) and 14 (attribute masking) |
 | sprite_hit_tests_2005.10.05 (11) | 1 | 10 | 11 passes since Phase 4; 01 #7, 02 #2, 03 #2, 04 #2, 05 #4, 06 #3, 07 #6, 08 #3; 09/10 hang |
 | sprite_overflow_tests (5) | 1 | 4 | 1 #7, 2 #9, 4 #7, 3 hangs; 5.Emulator passes |
@@ -139,9 +139,10 @@ arms, so the unimplemented-opcode fallback was removed.
 | oam_read | 1 | 0 | |
 | oam_stress | 1 | 0 | passes since attribute bits 2-4 are masked (issue 14) |
 | mmc3_test_2 (6) | 4 | 2 | 4 needs cycle-exact sprite fetch positions (Phase 5); 6 is the alternate revision, exclusive with 5 |
-| **Total blargg** | **36** | **40** | |
+| **Total blargg** | **40** | **36** | |
 
-Combined with nestest: 42 tests pass, 41 are ignored.
+Combined with nestest (7 tests): 47 integration tests pass, 36 are ignored,
+plus the ignored game_frames fingerprint run.
 
 ### Expected progression
 
@@ -150,8 +151,8 @@ Combined with nestest: 42 tests pass, 41 are ignored.
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
 | Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, apu_reset (landed: apu_test 2/3/4/7/8 and mmc3_test_2 1/2/3/5 pass) |
 | Phase 4 (bus-tick timing) | landed: ppu_vbl_nmi 01/03 and sprite_hit 11 now pass |
-| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, mmc3_test_2 4, ppu_vbl_nmi 02/04-10, apu_test 1/5/6 (landed: oam_stress via issue 14, ppu_open_bus via issues 13 and 14) |
-| Interrupt sampling (follow-up issue) | cpu_interrupts_v2 |
+| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, mmc3_test_2 4, ppu_vbl_nmi 02/05-10, cpu_interrupts_v2 3, apu_test 1/5/6 (and cpu_interrupts_v2 5 with the APU frame-flag fix); landed: oam_stress via issue 14, ppu_open_bus via issues 13 and 14 |
+| Interrupt sampling (issue 10) | landed: cpu_interrupts_v2 1/2/4 and ppu_vbl_nmi 04 now pass |
 
 ## Debug API reference (`src/system.rs`)
 
