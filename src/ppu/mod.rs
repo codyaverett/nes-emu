@@ -62,6 +62,12 @@ impl _Sprite {
     }
 }
 
+/// Frames a latched I/O bus bit survives without being refreshed before it
+/// decays to 0. Hardware takes roughly 600 ms (36 NTSC frames); blargg's
+/// ppu_open_bus expects the value intact immediately after a write and gone
+/// after about a second.
+pub const IO_BUS_DECAY_FRAMES: u64 = 36;
+
 pub struct Ppu {
     pub ctrl: PpuCtrl,
     pub mask: PpuMask,
@@ -83,6 +89,14 @@ pub struct Ppu {
     a12_last: bool,
     a12_low_cycles: u16,
     pub frame: u64,
+
+    /// PPU I/O bus latch ("decay register"). Every CPU write to $2000-$2007
+    /// loads all eight bits; every CPU read loads the bits the register
+    /// drives and returns the latch for the rest. Bits that are not
+    /// refreshed decay to 0 after `IO_BUS_DECAY_FRAMES` (see `io_bus()`).
+    io_bus: u8,
+    /// PPU frame in which each latch bit was last refreshed.
+    io_bus_stamp: [u64; 8],
 
     pub frame_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
     pub nmi_interrupt: bool,
@@ -137,6 +151,8 @@ impl Ppu {
             a12_last: false,
             a12_low_cycles: 0,
             frame: 0,
+            io_bus: 0,
+            io_bus_stamp: [0; 8],
             frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
             nmi_interrupt: false,
             v: 0,
@@ -183,6 +199,8 @@ impl Ppu {
         self.cycle = 0;
         self.a12_last = false;
         self.a12_low_cycles = 0;
+        self.io_bus = 0;
+        self.io_bus_stamp = [0; 8];
         self.v = 0;
         self.t = 0;
         self.x = 0;
@@ -200,14 +218,41 @@ impl Ppu {
 
     pub fn read_register(&mut self, address: u16, mapper: &mut dyn Mapper) -> u8 {
         match address {
-            0x2002 => self.read_status(),
-            0x2004 => self.read_oam_data(),
-            0x2007 => self.read_ppu_data(mapper),
-            _ => 0,
+            0x2002 => {
+                // Only the three flag bits are driven; bits 4-0 float on
+                // the I/O bus and the read leaves them untouched.
+                let flags = self.read_status() & 0xE0;
+                self.refresh_io_bus(flags, 0xE0);
+                flags | (self.io_bus() & 0x1F)
+            }
+            0x2004 => {
+                let value = self.read_oam_data();
+                self.refresh_io_bus(value, 0xFF);
+                value
+            }
+            0x2007 => {
+                let palette = (self.v & 0x3FFF) >= 0x3F00;
+                let value = self.read_ppu_data(mapper);
+                if palette {
+                    // Palette entries are 6 bits wide; bits 7-6 come from
+                    // the latch and are not refreshed by the read.
+                    let value = value & 0x3F;
+                    self.refresh_io_bus(value, 0x3F);
+                    value | (self.io_bus() & 0xC0)
+                } else {
+                    self.refresh_io_bus(value, 0xFF);
+                    value
+                }
+            }
+            // Write-only registers: nothing drives the bus, so the CPU
+            // sees whatever was last left on it.
+            _ => self.io_bus(),
         }
     }
 
     pub fn write_register(&mut self, address: u16, value: u8, mapper: &mut dyn Mapper) {
+        // Every write, including to the read-only $2002, loads the latch.
+        self.refresh_io_bus(value, 0xFF);
         match address {
             0x2000 => self.write_ctrl(value),
             0x2001 => self.write_mask(value),
@@ -218,6 +263,33 @@ impl Ppu {
             0x2007 => self.write_ppu_data(value, mapper),
             _ => {}
         }
+    }
+
+    /// Load the bits of `value` selected by `mask` into the I/O bus latch
+    /// and restart their decay timers.
+    fn refresh_io_bus(&mut self, value: u8, mask: u8) {
+        self.io_bus = (self.io_bus & !mask) | (value & mask);
+        let frame = self.frame;
+        for (bit, stamp) in self.io_bus_stamp.iter_mut().enumerate() {
+            if mask & (1 << bit) != 0 {
+                *stamp = frame;
+            }
+        }
+    }
+
+    /// Current I/O bus value with decayed bits cleared. Decay is evaluated
+    /// lazily here rather than every dot; only set bits can decay, so a
+    /// zero latch costs nothing.
+    fn io_bus(&mut self) -> u8 {
+        if self.io_bus != 0 {
+            let frame = self.frame;
+            for (bit, stamp) in self.io_bus_stamp.iter().enumerate() {
+                if frame.saturating_sub(*stamp) > IO_BUS_DECAY_FRAMES {
+                    self.io_bus &= !(1 << bit);
+                }
+            }
+        }
+        self.io_bus
     }
 
     fn read_status(&mut self) -> u8 {
@@ -1324,5 +1396,97 @@ mod tests {
 
         ppu.mask = PpuMask::empty();
         assert_eq!(oam_read(&mut ppu, 0x07), 0x11, "data was not stored");
+    }
+
+    // -----------------------------------------------------------------
+    // I/O bus (open bus) latch
+    // -----------------------------------------------------------------
+
+    fn nrom() -> Box<dyn Mapper> {
+        Cartridge::build_mapper(0, vec![0; 0x8000], vec![], Mirroring::Vertical)
+    }
+
+    #[test]
+    fn write_loads_latch_and_write_only_reads_return_it() {
+        let mut ppu = Ppu::new();
+        let mut m = nrom();
+        for (reg, value) in [
+            (0x2000u16, 0x55u8),
+            (0x2001, 0xAA),
+            (0x2002, 0x12),
+            (0x2005, 0x34),
+        ] {
+            ppu.write_register(reg, value, m.as_mut());
+            for r in [0x2000u16, 0x2001, 0x2003, 0x2005, 0x2006] {
+                assert_eq!(ppu.read_register(r, m.as_mut()), value, "reg {r:04X}");
+            }
+        }
+    }
+
+    #[test]
+    fn status_drives_top_three_bits_only() {
+        let mut ppu = Ppu::new();
+        let mut m = nrom();
+        ppu.write_register(0x2003, 0x1F, m.as_mut());
+        ppu.status = PpuStatus::VBLANK_STARTED | PpuStatus::SPRITE_ZERO_HIT;
+        assert_eq!(ppu.read_register(0x2002, m.as_mut()), 0xC0 | 0x1F);
+        // Flags loaded into the latch, low bits untouched.
+        assert_eq!(ppu.read_register(0x2000, m.as_mut()), 0xC0 | 0x1F);
+
+        // Low bits were not refreshed by the $2002 read: they decay from
+        // the write, while the flag bits decay from the later read.
+        ppu.frame += IO_BUS_DECAY_FRAMES;
+        ppu.status = PpuStatus::empty();
+        assert_eq!(ppu.read_register(0x2002, m.as_mut()), 0x1F);
+        ppu.frame += 1;
+        assert_eq!(ppu.read_register(0x2000, m.as_mut()), 0x00);
+    }
+
+    #[test]
+    fn oam_read_refreshes_all_bits() {
+        let mut ppu = Ppu::new();
+        let mut m = nrom();
+        ppu.oam_data[0] = 0xC3;
+        ppu.write_register(0x2003, 0x00, m.as_mut());
+        assert_eq!(ppu.read_register(0x2004, m.as_mut()), 0xC3);
+        assert_eq!(ppu.read_register(0x2005, m.as_mut()), 0xC3);
+    }
+
+    #[test]
+    fn vram_read_sets_latch_and_palette_read_keeps_top_bits() {
+        let mut ppu = Ppu::new();
+        let mut m = nrom();
+        write_ppu_addr(&mut ppu, m.as_mut(), 0x2100, 0x96);
+        assert_eq!(read_ppu_addr(&mut ppu, m.as_mut(), 0x2100), 0x96);
+        assert_eq!(ppu.read_register(0x2000, m.as_mut()), 0x96);
+
+        write_ppu_addr(&mut ppu, m.as_mut(), 0x3F05, 0xFF);
+        ppu.write_register(0x2006, 0x3F, m.as_mut());
+        ppu.write_register(0x2006, 0x05, m.as_mut());
+        // Latch is $05 from the last write: bits 7-6 clear.
+        assert_eq!(ppu.read_register(0x2007, m.as_mut()), 0x3F);
+        ppu.write_register(0x2006, 0x3F, m.as_mut());
+        ppu.write_register(0x2006, 0x85, m.as_mut());
+        // Latch is $85: bit 7 shows over the 6-bit palette entry.
+        assert_eq!(ppu.read_register(0x2007, m.as_mut()), 0xBF);
+        // Bits 7-6 were not refreshed by the palette read.
+        ppu.frame += IO_BUS_DECAY_FRAMES + 1;
+        assert_eq!(ppu.read_register(0x2000, m.as_mut()), 0x00);
+    }
+
+    #[test]
+    fn latch_decays_per_bit() {
+        let mut ppu = Ppu::new();
+        let mut m = nrom();
+        ppu.write_register(0x2000, 0xFF, m.as_mut());
+        ppu.frame += IO_BUS_DECAY_FRAMES;
+        assert_eq!(ppu.read_register(0x2001, m.as_mut()), 0xFF);
+        // Refresh bits 7-5 only (VBL clear, so they refresh to 0).
+        ppu.status = PpuStatus::SPRITE_OVERFLOW;
+        assert_eq!(ppu.read_register(0x2002, m.as_mut()), 0x3F);
+        ppu.frame += 1;
+        assert_eq!(ppu.read_register(0x2001, m.as_mut()), 0x20);
+        ppu.frame += IO_BUS_DECAY_FRAMES + 1;
+        assert_eq!(ppu.read_register(0x2001, m.as_mut()), 0x00);
     }
 }

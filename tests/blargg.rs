@@ -286,12 +286,7 @@ blargg_test!(
 // ---------------------------------------------------------------------
 // ppu_open_bus
 // ---------------------------------------------------------------------
-blargg_test!(
-    ppu_open_bus,
-    "ppu_open_bus/ppu_open_bus.nes",
-    SHORT,
-    ignore = "#2 Write to any PPU register should set decay value; Phase 5"
-);
+blargg_test!(ppu_open_bus, "ppu_open_bus/ppu_open_bus.nes", SHORT);
 
 // ---------------------------------------------------------------------
 // sprite_hit_tests_2005.10.05 (legacy $F8 protocol)
