@@ -275,62 +275,52 @@ blargg_test!(ppu_open_bus, "ppu_open_bus/ppu_open_bus.nes", SHORT);
 legacy_test!(
     sprite_hit_01_basics,
     "sprite_hit_tests_2005.10.05/01.basics.nes",
-    SHORT,
-    ignore = "FAILED #7 All-transparent sprite should miss; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_02_alignment,
     "sprite_hit_tests_2005.10.05/02.alignment.nes",
-    SHORT,
-    ignore = "FAILED #2 Basic sprite-background alignment is way off; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_03_corners,
     "sprite_hit_tests_2005.10.05/03.corners.nes",
-    SHORT,
-    ignore = "FAILED #2 Lower-right pixel should hit; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_04_flip,
     "sprite_hit_tests_2005.10.05/04.flip.nes",
-    SHORT,
-    ignore = "FAILED #2; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_05_left_clip,
     "sprite_hit_tests_2005.10.05/05.left_clip.nes",
-    SHORT,
-    ignore = "FAILED #4; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_06_right_edge,
     "sprite_hit_tests_2005.10.05/06.right_edge.nes",
-    SHORT,
-    ignore = "FAILED #3; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_07_screen_bottom,
     "sprite_hit_tests_2005.10.05/07.screen_bottom.nes",
-    SHORT,
-    ignore = "FAILED #6; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_08_double_height,
     "sprite_hit_tests_2005.10.05/08.double_height.nes",
-    SHORT,
-    ignore = "FAILED #3; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_09_timing_basics,
     "sprite_hit_tests_2005.10.05/09.timing_basics.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4/5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_10_timing_order,
     "sprite_hit_tests_2005.10.05/10.timing_order.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4/5"
+    SHORT
 );
 legacy_test!(
     sprite_hit_11_edge_timing,
@@ -344,26 +334,22 @@ legacy_test!(
 legacy_test!(
     sprite_overflow_1_basics,
     "sprite_overflow_tests/1.Basics.nes",
-    SHORT,
-    ignore = "FAILED #7 Should work normally when $2001 = $08 (bg only); Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_overflow_2_details,
     "sprite_overflow_tests/2.Details.nes",
-    SHORT,
-    ignore = "FAILED #9 Shouldn't be set when all scanlines have 7 or fewer sprites; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_overflow_3_timing,
     "sprite_overflow_tests/3.Timing.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4/5"
+    SHORT
 );
 legacy_test!(
     sprite_overflow_4_obscure,
     "sprite_overflow_tests/4.Obscure.nes",
-    SHORT,
-    ignore = "FAILED #7; Phase 5"
+    SHORT
 );
 legacy_test!(
     sprite_overflow_5_emulator,
@@ -466,8 +452,7 @@ blargg_test!(
 blargg_test!(
     mmc3_4_scanline_timing,
     "mmc3_test_2/rom_singles/4-scanline_timing.nes",
-    SHORT,
-    ignore = "never reports: needs cycle-exact sprite fetch positions in 257-320; Phase 5"
+    SHORT
 );
 blargg_test!(mmc3_5_mmc3, "mmc3_test_2/rom_singles/5-MMC3.nes", SHORT);
 blargg_test!(

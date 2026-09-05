@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-04
 **Type:** Architecture Plan
-**Status:** Phases 1-4 complete (2026-09-05); Phase 5 open
+**Status:** Phases 1-5 complete (2026-09-05); remaining: apu_test 1/5/6 and cpu_interrupts_v2 5 (APU frame counter timing)
 **Tracking:** GitHub issues #1 through #4 one per phase; Phase 5 is #11-#14; #10 is the interrupt-sampling follow-up
 
 ## Executive Summary
@@ -49,7 +49,7 @@ the compatibility bar for the commercial library.
 | Area | State | Problem |
 |------|-------|---------|
 | CPU | Inline `match` in `src/system.rs`, ~2200 lines, instruction-level timing | Returns a cycle count; PPU/APU catch up after the instruction |
-| PPU | `src/ppu/mod.rs`, shift-register pipeline (v0.1.0) | Owns its own copy of CHR; sprite eval/fetch batched at cycles 65 and 257 |
+| PPU | `src/ppu/mod.rs`, shift-register pipeline (v0.1.0) | Owns its own copy of CHR; sprite eval/fetch batched at cycles 65 and 257 (per-dot since #11) |
 | APU | `src/apu/mod.rs` | Stepped once per instruction, not per CPU cycle; no IRQ output |
 | Cartridge | Numeric `match` on mapper id in `src/cartridge/mod.rs` | MMC1, MMC3, MMC5, 65 in different styles; `mapper4.rs` unreferenced |
 | Interrupts | NMI polled after each instruction | No IRQ line, no edge/level semantics |
@@ -151,6 +151,8 @@ cycle.
 
 **Done when:** `sprite_hit_tests_2005.10.05`, `sprite_overflow_tests`,
 `ppu_open_bus`, `oam_read`, `oam_stress`, and all of `mmc3_test_2` pass.
+Met with #11 (2026-09-05, docs/debugging/PPU_SPRITE_PIPELINE.md); `mmc3_test_2`
+6 is the alternate MMC3 revision and is exclusive with 5 by design.
 
 ## Risks and Notes
 

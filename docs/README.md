@@ -14,6 +14,7 @@ Contains debugging session notes and references:
 - `BUS_TICK_TIMING.md` - PPU and APU advance inside each CPU bus access, DMA as real cycles (#4)
 - `VBLANK_NMI_TIMING.md` - NMI line withdrawal, 2002 suppression window, sample dot, odd-frame skip (#12)
 - `APU_FRAME_COUNTER.md` - frame sequencer schedule, three-cycle IRQ flag window, length counter enable/halt, power-up and reset state (#18)
+- `PPU_SPRITE_PIPELINE.md` - Per-dot sprite evaluation and fetch, overflow scan bug, sprite 0 hit rules, 8-pixel background shift fix, MMC3 A12 dot timing (#11)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
