@@ -2,6 +2,30 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.8.0] - 2026-09-05
+
+Accuracy wave 5. Closes issues 21 and 22.
+
+### Added
+- APU pulse sweep units: divider, reload, both negate modes with the pulse 1
+  one's-complement quirk, and continuous muting on period below 8 or target
+  above 7FF (issue 21). Pitch bends now occur. Needs a human listen.
+
+### Fixed
+- Archaic iNES headers with junk in bytes 7-15 (the DiskDude signature) no
+  longer corrupt the mapper number; byte 7's mapper nibble is ignored when
+  bytes 12-15 are nonzero or the archaic flag bits are set, with a NES 2.0
+  guard (issue 22). Tetris loaded as mapper 65 instead of 1 and rendered
+  garbled tiles; its title and menus now render correctly. No other ROM
+  changed. See docs/debugging/TETRIS_MMC1_FIX.md.
+
+### Known issues
+- roms/SuperMarioBros.nes has byte 7 = 40 with clean padding and still loads
+  as mapper 66; no heuristic can tell it from a real GxROM dump. Use
+  mario.nes.
+
+---
+
 ## [0.7.0] - 2026-09-05
 
 Accuracy wave 4. Closes issues 11 and 18. Test ROM status: 75 of 76 blargg
