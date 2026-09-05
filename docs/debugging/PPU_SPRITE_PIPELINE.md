@@ -143,8 +143,8 @@ vblank must, so `A12_FILTER_CYCLES` went from 8 to 10. `mmc3_test_2` 1, 2,
   clip rules, and the A12 rise dots 260 and 324.
 - Commercial ROM fingerprints (`tests/game_frames.rs`) changed for every
   title, as they must with an 8-pixel background shift. Frame dumps
-  compared by eye: SMB/Duck Hunt was a black screen on main (stuck waiting
-  for a sprite 0 hit that never came) and now shows its menu; Zelda's
+  compared by eye: SMB/Duck Hunt was a black screen on main at every
+  checkpoint (cause not investigated) and now shows its menu; Zelda's
   select screen now draws the Link icons and heart cursor that were missing;
   SMB3, Contra and TMNT title screens are identical apart from the shift;
   Tetris' text was already garbled on main and is unchanged apart from the

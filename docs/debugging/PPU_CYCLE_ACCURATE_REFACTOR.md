@@ -673,6 +673,6 @@ Covered by five unit tests in the PPU tests module (`oam_*`).
 
 ### Remaining Limitation
 
-Known Limitations item 3 (batched sprite evaluation) still applies. Until it
-is replaced, `$2004` reads between cycles 65 and 340 of a rendering line do
-not track the evaluation pointer.
+Resolved by issue 11 (docs/debugging/PPU_SPRITE_PIPELINE.md): evaluation
+now runs per dot and `$2004` reads between cycles 65 and 320 return the byte
+the evaluation unit or the sprite fetch is looking at.
