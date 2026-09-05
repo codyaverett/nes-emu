@@ -299,7 +299,7 @@ impl System {
             INSTRUCTION_COUNT += 1;
         }
 
-        let cycles = match opcode {
+        match opcode {
             0xA9 => {
                 self.cpu_a = self.read_byte(self.cpu_pc);
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
@@ -383,8 +383,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x02) == 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -393,8 +392,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x02) != 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -403,8 +401,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x80) == 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -413,8 +410,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x80) != 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -511,8 +507,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x01) != 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -522,8 +517,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x01) == 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -722,6 +716,14 @@ impl System {
                 self.cpu_x = self.read_byte(addr);
                 self.update_nz(self.cpu_x);
                 3
+            }
+            0xB4 => {
+                // LDY zero page,X
+                let addr = self.read_byte(self.cpu_pc).wrapping_add(self.cpu_x) as u16 & 0xFF;
+                self.cpu_pc = self.cpu_pc.wrapping_add(1);
+                self.cpu_y = self.read_byte(addr);
+                self.update_nz(self.cpu_y);
+                4
             }
             0xA4 => {
                 // LDY zero page
@@ -1083,8 +1085,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x40) == 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -1094,8 +1095,7 @@ impl System {
                 let offset = self.read_byte(self.cpu_pc) as i8;
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 if (self.cpu_status & 0x40) != 0 {
-                    self.cpu_pc = self.cpu_pc.wrapping_add(offset as u16);
-                    3
+                    self.branch_taken(offset)
                 } else {
                     2
                 }
@@ -1759,9 +1759,17 @@ impl System {
                 4
             }
             0x1C | 0x3C | 0x5C | 0x7C | 0xDC | 0xFC => {
-                // NOP absolute,X
+                // NOP absolute,X: reads the operand like LDA abs,X, so it
+                // takes the extra cycle when the index crosses a page.
+                let base = self.read_word(self.cpu_pc);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
-                4
+                let addr = base.wrapping_add(self.cpu_x as u16);
+                let _ = self.read_byte(addr);
+                if Self::page_crossed(base, addr) {
+                    5
+                } else {
+                    4
+                }
             }
             // LAX - LDA + LDX
             0xA7 => {
@@ -1796,13 +1804,18 @@ impl System {
             }
             0xBF => {
                 // LAX absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
                 let value = self.read_byte(addr);
                 self.cpu_a = value;
                 self.cpu_x = value;
                 self.update_nz(value);
-                4
+                if Self::page_crossed(base, addr) {
+                    5
+                } else {
+                    4
+                }
             }
             0xA3 => {
                 // LAX (indirect,X)
@@ -1823,12 +1836,17 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_add(1);
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
-                let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                let indirect = (hi << 8) | lo;
+                let addr = indirect.wrapping_add(self.cpu_y as u16);
                 let value = self.read_byte(addr);
                 self.cpu_a = value;
                 self.cpu_x = value;
                 self.update_nz(value);
-                5
+                if Self::page_crossed(indirect, addr) {
+                    6
+                } else {
+                    5
+                }
             }
             // SAX - Store A & X
             0x87 => {
@@ -2493,21 +2511,33 @@ impl System {
                 5
             }
             0x9C => {
-                // SHY absolute,X (highly unstable)
-                let addr = self.read_word(self.cpu_pc);
+                // SHY absolute,X (highly unstable). Stores Y AND (high byte
+                // of the base address + 1). When the index crosses a page the
+                // stored value also replaces the high byte of the target.
+                let base = self.read_word(self.cpu_pc);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
-                let hi = ((addr >> 8) as u8).wrapping_add(1);
-                let value = self.cpu_y & hi;
-                self.write_byte(addr.wrapping_add(self.cpu_x as u16), value);
+                let addr = base.wrapping_add(self.cpu_x as u16);
+                let value = self.cpu_y & ((base >> 8) as u8).wrapping_add(1);
+                let addr = if Self::page_crossed(base, addr) {
+                    ((value as u16) << 8) | (addr & 0x00FF)
+                } else {
+                    addr
+                };
+                self.write_byte(addr, value);
                 5
             }
             0x9E => {
-                // SHX absolute,Y (highly unstable)
-                let addr = self.read_word(self.cpu_pc);
+                // SHX absolute,Y (highly unstable). Same quirk as SHY with X.
+                let base = self.read_word(self.cpu_pc);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
-                let hi = ((addr >> 8) as u8).wrapping_add(1);
-                let value = self.cpu_x & hi;
-                self.write_byte(addr.wrapping_add(self.cpu_y as u16), value);
+                let addr = base.wrapping_add(self.cpu_y as u16);
+                let value = self.cpu_x & ((base >> 8) as u8).wrapping_add(1);
+                let addr = if Self::page_crossed(base, addr) {
+                    ((value as u16) << 8) | (addr & 0x00FF)
+                } else {
+                    addr
+                };
+                self.write_byte(addr, value);
                 5
             }
             0x9B => {
@@ -2537,16 +2567,19 @@ impl System {
                 self.cpu_pc = self.cpu_pc.wrapping_sub(1);
                 2
             }
-            _ => {
-                log::debug!(
-                    "Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}",
-                    opcode,
-                    self.cpu_pc.wrapping_sub(1)
-                );
-                2
-            }
-        };
-        cycles
+        }
+    }
+
+    /// Apply a taken branch. Costs 3 cycles, or 4 when the target is on a
+    /// different page from the address of the next instruction.
+    fn branch_taken(&mut self, offset: i8) -> u8 {
+        let next = self.cpu_pc;
+        self.cpu_pc = next.wrapping_add(offset as u16);
+        if Self::page_crossed(next, self.cpu_pc) {
+            4
+        } else {
+            3
+        }
     }
 
     fn update_nz(&mut self, value: u8) {

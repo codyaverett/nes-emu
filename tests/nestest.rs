@@ -158,7 +158,6 @@ fn nestest_registers_match_log_prefix() {
 }
 
 #[test]
-#[ignore = "diverges at log line 3640: opcode $B4 LDY zp,X is unimplemented in cpu_step (PC advances by 1 instead of 2); CPU fix"]
 fn nestest_registers_match_log() {
     let cmp = compare_against_log(usize::MAX);
     if let Some(m) = &cmp.first_reg_mismatch {
@@ -179,7 +178,6 @@ fn nestest_cycles_match_log_prefix() {
 }
 
 #[test]
-#[ignore = "CYC matches through line 3639 but the run diverges at line 3640 ($B4 unimplemented) so the full cycle column cannot be checked yet; CPU fix, then Phase 4"]
 fn nestest_cycles_match_log() {
     let cmp = compare_against_log(usize::MAX);
     // Report the earliest divergence of either kind.
@@ -192,7 +190,6 @@ fn nestest_cycles_match_log() {
 }
 
 #[test]
-#[ignore = "run diverges from the log before the result bytes are meaningful (see nestest_registers_match_log); CPU fix"]
 fn nestest_result_bytes_are_clear() {
     // nestest.txt: in automation mode the last failing test number for the
     // official opcode group is stored at $02 and for the unofficial group

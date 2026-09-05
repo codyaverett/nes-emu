@@ -107,26 +107,27 @@ compiled and runnable with `--include-ignored`.
 | `nestest_trace_format_matches_log_layout` | pass | Trace format pinned against log line 1 |
 | `nestest_registers_match_log_prefix` | pass | Lines 1-3639 match on PC/A/X/Y/P/SP |
 | `nestest_cycles_match_log_prefix` | pass | Lines 1-3639 also match on CYC |
-| `nestest_registers_match_log` | ignored | Line 3640: opcode `$B4` (LDY zp,X) unimplemented, PC advances by 1 |
-| `nestest_cycles_match_log` | ignored | Blocked by the same divergence |
-| `nestest_result_bytes_are_clear` | ignored | Run leaves the golden path before `$02`/`$03` are meaningful |
+| `nestest_registers_match_log` | pass | All 8991 lines match on PC/A/X/Y/P/SP |
+| `nestest_cycles_match_log` | pass | All 8991 lines match on CYC |
+| `nestest_result_bytes_are_clear` | pass | `$02` and `$03` are both zero at the end of the run |
 
-### CPU bug found by the harness (not fixed in this lane)
+### CPU bugs found by the harness (fixed, issue 9)
 
-`cpu_step` in `src/system.rs` has no arm for opcode `$B4` (`LDY zp,X`),
-so it falls through to the "unimplemented" default, which consumes only
-the opcode byte. This single gap explains nestest line 3640,
-`instr_test-v5/05-zp_xy`, `official_only`, `all_instrs`, and
-`cpu_timing_test6` (`FAIL OP :$B4 / UNKNOWN ERROR`). All other 255
-opcodes have match arms. Separately, `07-abs_xy` reports `9C SYA abs,X`
-and `9E SXA abs,Y` (unofficial SHY/SHX) as wrong.
+The first harness run found that `cpu_step` had no arm for opcode `$B4`
+(`LDY zp,X`), which blocked nestest at line 3640 and four blargg CPU
+suites. Fixing it exposed four more cycle-count bugs that the full
+nestest cycle column and `cpu_timing_test6` then caught: unofficial
+`NOP abs,X`, `LAX abs,Y` and `LAX (ind),Y` ignored the page-crossing
+cycle, taken branches ignored the page-crossing cycle, and `SHY`/`SHX`
+did not apply the page-crossing address quirk. All 256 opcodes now have
+arms, so the unimplemented-opcode fallback was removed.
 
 ### blargg suites
 
 | Suite | Pass | Ignored | Ignored tests (reason) |
 |-------|------|---------|------------------------|
-| instr_test-v5 (16 singles + 2 combined) | 14 | 4 | 05-zp_xy ($B4), 07-abs_xy (SHY/SHX), official_only, all_instrs |
-| cpu_timing_test6 | 0 | 1 | FAIL OP :$B4 |
+| instr_test-v5 (16 singles + 2 combined) | 18 | 0 | |
+| cpu_timing_test6 | 1 | 0 | |
 | cpu_interrupts_v2 (5 + 1) | 0 | 6 | no IRQ line: 1 fails #3 (APU IRQ), 2/3/5 hang, 4 wrong DMA offsets, combined fails in test 1 |
 | ppu_vbl_nmi (10 + 1) | 0 | 11 | 01 #8 VBL too long with BG off; 04 #11 NMI after next instruction; 02/03/05-10 hang in sync loop; combined fails in test 1 |
 | ppu_open_bus | 0 | 1 | #2 write should set decay value |
@@ -137,7 +138,7 @@ and `9E SXA abs,Y` (unofficial SHY/SHX) as wrong.
 | oam_read | 1 | 0 | |
 | oam_stress | 0 | 1 | every 4th OAM byte reads back wrong |
 | mmc3_test_2 (6) | 0 | 6 | IRQ counter never clocked: 1 #3, 2 #2, 3 #4, 5 #2, 6 #2; 4 hangs |
-| **Total blargg** | **22** | **54** | |
+| **Total blargg** | **27** | **49** | |
 
 Combined with nestest: 20 tests pass, 62 are ignored.
 
@@ -147,7 +148,7 @@ Combined with nestest: 20 tests pass, 62 are ignored.
 |-------|---------------------------------|
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
 | Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, mmc3_test_2 1/2/4/5/6, apu_reset (CPU/APU half landed: apu_test 2/3/4/7/8 now pass) |
-| Phase 4 (bus-tick timing) | nestest CYC, cpu_timing_test6, ppu_vbl_nmi, apu_test 1/5/6 |
+| Phase 4 (bus-tick timing) | ppu_vbl_nmi, apu_test 1/5/6 |
 | Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 3 |
 
 ## Debug API reference (`src/system.rs`)

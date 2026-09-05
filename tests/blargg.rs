@@ -101,8 +101,7 @@ blargg_test!(
 blargg_test!(
     instr_v5_05_zp_xy,
     "instr_test-v5/rom_singles/05-zp_xy.nes",
-    MEDIUM,
-    ignore = "reports B4 LDY z,X (opcode $B4 unimplemented in cpu_step); CPU fix"
+    MEDIUM
 );
 blargg_test!(
     instr_v5_06_absolute,
@@ -112,8 +111,7 @@ blargg_test!(
 blargg_test!(
     instr_v5_07_abs_xy,
     "instr_test-v5/rom_singles/07-abs_xy.nes",
-    MEDIUM,
-    ignore = "reports 9C SYA abs,X and 9E SXA abs,Y (unofficial SHY/SHX wrong); CPU fix"
+    MEDIUM
 );
 blargg_test!(
     instr_v5_08_ind_x,
@@ -163,15 +161,9 @@ blargg_test!(
 blargg_test!(
     instr_v5_official_only,
     "instr_test-v5/official_only.nes",
-    LONG,
-    ignore = "fails in test 5 of 16 (B4 LDY z,X); CPU fix"
+    LONG
 );
-blargg_test!(
-    instr_v5_all_instrs,
-    "instr_test-v5/all_instrs.nes",
-    LONG,
-    ignore = "fails in test 5 of 16 (B4 LDY z,X), then 07-abs_xy; CPU fix"
-);
+blargg_test!(instr_v5_all_instrs, "instr_test-v5/all_instrs.nes", LONG);
 
 // ---------------------------------------------------------------------
 // cpu_timing_test6: instruction cycle counts (screen-only reporting)
@@ -180,8 +172,7 @@ screen_test!(
     cpu_timing_test6,
     "cpu_timing_test6/cpu_timing_test.nes",
     MEDIUM,
-    "PASSED",
-    ignore = "screen shows FAIL OP :$B4 / UNKNOWN ERROR (opcode $B4 unimplemented); CPU fix then Phase 4"
+    "PASSED"
 );
 
 // ---------------------------------------------------------------------
