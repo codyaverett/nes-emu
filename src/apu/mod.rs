@@ -13,8 +13,85 @@ bitflags! {
     }
 }
 
-pub struct Pulse {
+/// Length counter shared by the pulse, triangle and noise channels.
+///
+/// Models the hardware ordering that blargg's length-counter tests observe:
+///
+/// * A channel disabled through `$4015` has its counter forced to 0 and
+///   ignores reloads until it is enabled again (apu_test 1 #7).
+/// * A reload written to `$4003`/`$4007`/`$400B`/`$400F` and a halt-flag
+///   change land one CPU cycle after the write, *after* that cycle's frame
+///   clock. If the counter was clocked in between (it changed and was not
+///   already 0) the reload is dropped, per blargg's `len_reload_timing`
+///   readme ("reload during length clock when ctr > 0 should be ignored").
+///   The halt flag likewise only guards clocks after the cycle it was
+///   written in.
+#[derive(Debug, Default, Clone, Copy)]
+struct LengthCounter {
     enabled: bool,
+    counter: u8,
+    halt: bool,
+    pending_halt: Option<bool>,
+    pending_reload: Option<u8>,
+    /// `counter` at the time of the pending reload's write.
+    counter_at_write: u8,
+}
+
+impl LengthCounter {
+    /// `$4015` enable bit: disabling clears the counter immediately.
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.counter = 0;
+            self.pending_reload = None;
+        }
+    }
+
+    /// Write of the length index (register bits 7-3); ignored while disabled.
+    fn load(&mut self, index: u8) {
+        if self.enabled {
+            self.pending_reload = Some(LENGTH_TABLE[index as usize]);
+            self.counter_at_write = self.counter;
+        }
+    }
+
+    fn set_halt(&mut self, halt: bool) {
+        self.pending_halt = Some(halt);
+    }
+
+    /// Half-frame clock.
+    fn clock(&mut self) {
+        if self.counter > 0 && !self.halt {
+            self.counter -= 1;
+        }
+    }
+
+    /// Land the previous cycle's register writes (called after the frame
+    /// clock of the cycle following the write).
+    fn apply_pending_writes(&mut self) {
+        if let Some(value) = self.pending_reload.take() {
+            if self.counter == self.counter_at_write {
+                self.counter = value;
+            }
+        }
+        if let Some(halt) = self.pending_halt.take() {
+            self.halt = halt;
+        }
+    }
+
+    fn active(&self) -> bool {
+        self.counter > 0
+    }
+
+    /// Soft reset: `$4015` is cleared, so the channel is disabled and its
+    /// counter zeroed. The halt flag is register state and survives.
+    fn reset(&mut self) {
+        self.set_enabled(false);
+        self.pending_halt = None;
+    }
+}
+
+pub struct Pulse {
     duty: u8,
     volume: u8,
     constant_volume: bool,
@@ -30,14 +107,13 @@ pub struct Pulse {
     _sweep_counter: u8,
     timer_period: u16,
     timer_counter: u16,
-    length_counter: u8,
+    length: LengthCounter,
     sequence_pos: u8,
 }
 
 impl Pulse {
     fn new() -> Self {
         Pulse {
-            enabled: false,
             duty: 0,
             volume: 0,
             constant_volume: false,
@@ -53,7 +129,7 @@ impl Pulse {
             _sweep_counter: 0,
             timer_period: 0,
             timer_counter: 0,
-            length_counter: 0,
+            length: LengthCounter::default(),
             sequence_pos: 0,
         }
     }
@@ -68,7 +144,7 @@ impl Pulse {
     }
 
     fn _get_output(&self) -> u8 {
-        if !self.enabled || self.length_counter == 0 || self.timer_period < 8 {
+        if !self.length.active() || self.timer_period < 8 {
             return 0;
         }
 
@@ -111,26 +187,29 @@ impl Pulse {
 }
 
 pub struct Triangle {
-    enabled: bool,
+    /// `$4008` bit 7: linear counter control flag, which is also the length
+    /// counter halt flag. Survives a soft reset (apu_reset len_ctrs_enabled
+    /// #3, "triangle unaffected").
+    control: bool,
     linear_counter: u8,
     linear_counter_period: u8,
     linear_counter_reload: bool,
     timer_period: u16,
     timer_counter: u16,
-    length_counter: u8,
+    length: LengthCounter,
     sequence_pos: u8,
 }
 
 impl Triangle {
     fn new() -> Self {
         Triangle {
-            enabled: false,
+            control: false,
             linear_counter: 0,
             linear_counter_period: 0,
             linear_counter_reload: false,
             timer_period: 0,
             timer_counter: 0,
-            length_counter: 0,
+            length: LengthCounter::default(),
             sequence_pos: 0,
         }
     }
@@ -138,7 +217,7 @@ impl Triangle {
     fn clock_timer(&mut self) {
         if self.timer_counter == 0 {
             self.timer_counter = self.timer_period;
-            if self.linear_counter > 0 && self.length_counter > 0 {
+            if self.linear_counter > 0 && self.length.active() {
                 self.sequence_pos = (self.sequence_pos + 1) % 32;
             }
         } else {
@@ -146,8 +225,22 @@ impl Triangle {
         }
     }
 
+    /// Quarter-frame clock of the linear counter. The reload flag is only
+    /// cleared when the control flag is clear, so a note with control set
+    /// holds its linear counter at the period.
+    fn clock_linear_counter(&mut self) {
+        if self.linear_counter_reload {
+            self.linear_counter = self.linear_counter_period;
+        } else if self.linear_counter > 0 {
+            self.linear_counter -= 1;
+        }
+        if !self.control {
+            self.linear_counter_reload = false;
+        }
+    }
+
     fn _get_output(&self) -> u8 {
-        if !self.enabled || self.length_counter == 0 || self.linear_counter == 0 {
+        if !self.length.active() || self.linear_counter == 0 {
             return 0;
         }
 
@@ -161,7 +254,6 @@ impl Triangle {
 }
 
 pub struct Noise {
-    enabled: bool,
     mode: bool,
     volume: u8,
     constant_volume: bool,
@@ -172,14 +264,13 @@ pub struct Noise {
     envelope_start: bool,
     timer_period: u16,
     timer_counter: u16,
-    length_counter: u8,
+    length: LengthCounter,
     shift_register: u16,
 }
 
 impl Noise {
     fn new() -> Self {
         Noise {
-            enabled: false,
             mode: false,
             volume: 0,
             constant_volume: false,
@@ -190,7 +281,7 @@ impl Noise {
             envelope_start: false,
             timer_period: 0,
             timer_counter: 0,
-            length_counter: 0,
+            length: LengthCounter::default(),
             shift_register: 1,
         }
     }
@@ -208,7 +299,7 @@ impl Noise {
     }
 
     fn _get_output(&self) -> u8 {
-        if !self.enabled || self.length_counter == 0 || (self.shift_register & 1) == 1 {
+        if !self.length.active() || (self.shift_register & 1) == 1 {
             return 0;
         }
 
@@ -239,9 +330,29 @@ impl Noise {
     }
 }
 
-/// Approximate CPU cycles between frame sequencer steps (NTSC: the 4-step
-/// sequence runs at ~240 Hz, i.e. 29830 CPU cycles per 4 steps).
-const FRAME_STEP_CYCLES: u32 = 7457;
+/// Frame sequencer schedule, in CPU cycles since the sequencer was last
+/// restarted (the nesdev frame counter table, which is written in APU
+/// cycles with half-cycle offsets, doubled). See
+/// docs/debugging/APU_FRAME_COUNTER.md.
+///
+/// 4-step mode: quarter clocks at 7457, 14913, 22371 and 29829; half clocks
+/// at 14913 and 29829; the frame IRQ flag is raised on 29828, 29829 and
+/// 29830 (three consecutive cycles); the sequence wraps at 29830.
+/// 5-step mode: quarter at 7457, 14913, 22371 and 37281; half at 14913 and
+/// 37281; wraps at 37282; nothing happens at 29829.
+const FRAME_QUARTER_1: u32 = 7457;
+const FRAME_HALF_1: u32 = 14913;
+const FRAME_QUARTER_3: u32 = 22371;
+const FRAME_4STEP_IRQ_FIRST: u32 = 29828;
+const FRAME_4STEP_HALF_2: u32 = 29829;
+const FRAME_4STEP_PERIOD: u32 = 29830;
+const FRAME_5STEP_HALF_2: u32 = 37281;
+const FRAME_5STEP_PERIOD: u32 = 37282;
+
+/// CPU cycles between a `$4017` write and the sequencer restart when the
+/// write lands on an even APU-aligned cycle; odd cycles take one more. Power
+/// and reset behave as a `$4017` write with this delay.
+const FRAME_RESET_DELAY: u8 = 3;
 
 /// NTSC DMC timer periods (CPU cycles per output bit), indexed by $4010 bits 0-3.
 const DMC_RATE_TABLE: [u16; 16] = [
@@ -372,19 +483,22 @@ pub struct Apu {
     noise: Noise,
     dmc: Dmc,
     status: ApuStatus,
+    /// Last value written to `$4017` (re-applied by a soft reset).
     frame_counter: u8,
-    frame_sequence: u8,
-    /// CPU cycles until the next frame sequencer step. Separate from
-    /// `cycles` so a $4017 write can reset the sequencer without disturbing
-    /// the channel timer parity.
-    frame_divider: u32,
+    /// Sequencer mode in effect: true for the 5-step sequence. Latched from
+    /// `frame_counter` bit 7 when the `$4017` write lands, not at the write.
+    frame_5step: bool,
+    /// CPU cycles since the sequencer was last restarted; indexes the
+    /// `FRAME_*` schedule. Separate from `cycles` so a $4017 write can reset
+    /// the sequencer without disturbing the channel timer parity.
+    frame_cycle: u32,
     /// Countdown until a pending `$4017` write resets the sequencer. The
     /// reset lands 3 CPU cycles after a write on an even (APU) cycle and 4
     /// after a write on an odd cycle; 0 means nothing pending.
     frame_reset_delay: u8,
-    /// Frame interrupt flag: set on the last step of the 4-step sequence
-    /// unless inhibited. Held until a $4015 read or a $4017 write with
-    /// bit 6 (inhibit) set.
+    /// Frame interrupt flag: raised on the last three cycles of the 4-step
+    /// sequence unless inhibited. Held until a $4015 read or a $4017 write
+    /// with bit 6 (inhibit) set.
     frame_interrupt: bool,
     frame_interrupt_inhibit: bool,
     cycles: u64,
@@ -406,26 +520,39 @@ impl Apu {
             dmc: Dmc::new(),
             status: ApuStatus::empty(),
             frame_counter: 0,
-            frame_sequence: 0,
-            frame_divider: FRAME_STEP_CYCLES,
-            frame_reset_delay: 0,
+            frame_5step: false,
+            frame_cycle: 0,
+            // Power-up behaves as if $00 had been written to $4017: the
+            // 4-step sequence starts (IRQ enabled) after the write delay.
+            frame_reset_delay: FRAME_RESET_DELAY,
             frame_interrupt: false,
             frame_interrupt_inhibit: false,
             cycles: 0,
         }
     }
 
+    /// Soft reset (the console's RESET button). Per apu_reset: `$4015` is
+    /// cleared (all channels disabled, samples stopped, IRQ flags clear),
+    /// the last `$4017` value is written again with the IRQ inhibit bit
+    /// dropped, and the frame IRQ flag is clear. Everything else is
+    /// register state that the reset line does not touch; in particular the
+    /// triangle's control flag, linear counter and period survive
+    /// (len_ctrs_enabled #3). The triangle sequencer phase restarts.
     pub fn reset(&mut self) {
-        self.pulse1 = Pulse::new();
-        self.pulse2 = Pulse::new();
-        self.triangle = Triangle::new();
-        self.noise = Noise::new();
-        self.dmc = Dmc::new();
+        self.pulse1.length.reset();
+        self.pulse2.length.reset();
+        self.triangle.length.reset();
+        self.triangle.sequence_pos = 0;
+        self.noise.length.reset();
+        self.dmc.enabled = false;
+        self.dmc.bytes_remaining = 0;
+        self.dmc.interrupt = false;
         self.status = ApuStatus::empty();
-        self.frame_counter = 0;
-        self.frame_sequence = 0;
-        self.frame_divider = FRAME_STEP_CYCLES;
-        self.frame_reset_delay = 0;
+        self.frame_counter &= !0x40;
+        // Park the sequencer until the re-write lands so a reset taken just
+        // before the IRQ cycles cannot raise the flag in the meantime.
+        self.frame_cycle = 0;
+        self.frame_reset_delay = FRAME_RESET_DELAY;
         self.frame_interrupt = false;
         self.frame_interrupt_inhibit = false;
         self.cycles = 0;
@@ -435,16 +562,16 @@ impl Apu {
         match addr {
             0x4015 => {
                 let mut result = 0u8;
-                if self.pulse1.length_counter > 0 {
+                if self.pulse1.length.active() {
                     result |= 0x01;
                 }
-                if self.pulse2.length_counter > 0 {
+                if self.pulse2.length.active() {
                     result |= 0x02;
                 }
-                if self.triangle.length_counter > 0 {
+                if self.triangle.length.active() {
                     result |= 0x04;
                 }
-                if self.noise.length_counter > 0 {
+                if self.noise.length.active() {
                     result |= 0x08;
                 }
                 if self.dmc.bytes_remaining > 0 {
@@ -471,6 +598,7 @@ impl Apu {
             0x4000 => {
                 self.pulse1.duty = (value >> 6) & 0x03;
                 self.pulse1.envelope_loop = (value & 0x20) != 0;
+                self.pulse1.length.set_halt((value & 0x20) != 0);
                 self.pulse1.constant_volume = (value & 0x10) != 0;
                 self.pulse1.volume = value & 0x0F;
                 self.pulse1.envelope_period = value & 0x0F;
@@ -487,13 +615,14 @@ impl Apu {
             0x4003 => {
                 self.pulse1.timer_period =
                     (self.pulse1.timer_period & 0x00FF) | ((value as u16 & 0x07) << 8);
-                self.pulse1.length_counter = LENGTH_TABLE[(value >> 3) as usize];
+                self.pulse1.length.load(value >> 3);
                 self.pulse1.envelope_start = true;
             }
 
             0x4004 => {
                 self.pulse2.duty = (value >> 6) & 0x03;
                 self.pulse2.envelope_loop = (value & 0x20) != 0;
+                self.pulse2.length.set_halt((value & 0x20) != 0);
                 self.pulse2.constant_volume = (value & 0x10) != 0;
                 self.pulse2.volume = value & 0x0F;
                 self.pulse2.envelope_period = value & 0x0F;
@@ -510,11 +639,13 @@ impl Apu {
             0x4007 => {
                 self.pulse2.timer_period =
                     (self.pulse2.timer_period & 0x00FF) | ((value as u16 & 0x07) << 8);
-                self.pulse2.length_counter = LENGTH_TABLE[(value >> 3) as usize];
+                self.pulse2.length.load(value >> 3);
                 self.pulse2.envelope_start = true;
             }
 
             0x4008 => {
+                self.triangle.control = (value & 0x80) != 0;
+                self.triangle.length.set_halt((value & 0x80) != 0);
                 self.triangle.linear_counter_period = value & 0x7F;
             }
             0x400A => {
@@ -523,12 +654,13 @@ impl Apu {
             0x400B => {
                 self.triangle.timer_period =
                     (self.triangle.timer_period & 0x00FF) | ((value as u16 & 0x07) << 8);
-                self.triangle.length_counter = LENGTH_TABLE[(value >> 3) as usize];
+                self.triangle.length.load(value >> 3);
                 self.triangle.linear_counter_reload = true;
             }
 
             0x400C => {
                 self.noise.envelope_loop = (value & 0x20) != 0;
+                self.noise.length.set_halt((value & 0x20) != 0);
                 self.noise.constant_volume = (value & 0x10) != 0;
                 self.noise.volume = value & 0x0F;
                 self.noise.envelope_period = value & 0x0F;
@@ -538,7 +670,7 @@ impl Apu {
                 self.noise.timer_period = NOISE_PERIOD_TABLE[(value & 0x0F) as usize];
             }
             0x400F => {
-                self.noise.length_counter = LENGTH_TABLE[(value >> 3) as usize];
+                self.noise.length.load(value >> 3);
                 self.noise.envelope_start = true;
             }
 
@@ -562,24 +694,13 @@ impl Apu {
             }
 
             0x4015 => {
-                self.pulse1.enabled = (value & 0x01) != 0;
-                self.pulse2.enabled = (value & 0x02) != 0;
-                self.triangle.enabled = (value & 0x04) != 0;
-                self.noise.enabled = (value & 0x08) != 0;
+                // Disabling a channel clears its length counter at once and
+                // blocks reloads until it is enabled again.
+                self.pulse1.length.set_enabled((value & 0x01) != 0);
+                self.pulse2.length.set_enabled((value & 0x02) != 0);
+                self.triangle.length.set_enabled((value & 0x04) != 0);
+                self.noise.length.set_enabled((value & 0x08) != 0);
                 self.dmc.enabled = (value & 0x10) != 0;
-
-                if !self.pulse1.enabled {
-                    self.pulse1.length_counter = 0;
-                }
-                if !self.pulse2.enabled {
-                    self.pulse2.length_counter = 0;
-                }
-                if !self.triangle.enabled {
-                    self.triangle.length_counter = 0;
-                }
-                if !self.noise.enabled {
-                    self.noise.length_counter = 0;
-                }
 
                 // Bit 4: restart the sample if one is not already playing;
                 // clearing it stops playback once the buffer drains.
@@ -603,9 +724,14 @@ impl Apu {
                 }
 
                 // Writing $4017 resets the frame sequencer, but the reset
-                // lands 3 or 4 CPU cycles after the write depending on the
-                // write cycle's parity. See `apply_frame_reset`.
-                self.frame_reset_delay = if self.cycles.is_multiple_of(2) { 3 } else { 4 };
+                // (and the mode change) lands 3 or 4 CPU cycles after the
+                // write depending on the write cycle's parity. See
+                // `apply_frame_reset`.
+                self.frame_reset_delay = if self.cycles.is_multiple_of(2) {
+                    FRAME_RESET_DELAY
+                } else {
+                    FRAME_RESET_DELAY + 1
+                };
             }
 
             _ => {}
@@ -622,32 +748,38 @@ impl Apu {
         self.triangle.clock_timer();
         self.dmc.clock_timer();
 
-        self.frame_divider -= 1;
-        if self.frame_divider == 0 {
-            self.frame_divider = FRAME_STEP_CYCLES;
+        // A pending $4017 write landing this cycle restarts the sequencer
+        // in place of advancing it.
+        let landed = self.frame_reset_delay > 0 && {
+            self.frame_reset_delay -= 1;
+            self.frame_reset_delay == 0
+        };
+        if landed {
+            self.apply_frame_reset();
+        } else {
+            self.frame_cycle += 1;
             self.clock_frame_counter();
         }
 
-        if self.frame_reset_delay > 0 {
-            self.frame_reset_delay -= 1;
-            if self.frame_reset_delay == 0 {
-                self.apply_frame_reset();
-            }
-        }
+        // Length counter reloads and halt writes from the previous cycle
+        // land after this cycle's frame clock (see `LengthCounter`).
+        self.pulse1.length.apply_pending_writes();
+        self.pulse2.length.apply_pending_writes();
+        self.triangle.length.apply_pending_writes();
+        self.noise.length.apply_pending_writes();
 
         self.cycles += 1;
     }
 
-    /// Delayed effect of a `$4017` write: restart the sequencer and, in
-    /// 5-step mode, clock the quarter- and half-frame units immediately.
+    /// Delayed effect of a `$4017` write: latch the mode, restart the
+    /// sequencer and, in 5-step mode, clock the quarter- and half-frame
+    /// units immediately.
     fn apply_frame_reset(&mut self) {
-        self.frame_sequence = 0;
-        self.frame_divider = FRAME_STEP_CYCLES;
-        if (self.frame_counter & 0x80) != 0 {
-            self.clock_envelopes();
-            self.clock_linear_counter();
-            self.clock_length_counters();
-            self.clock_sweeps();
+        self.frame_5step = (self.frame_counter & 0x80) != 0;
+        self.frame_cycle = 0;
+        if self.frame_5step {
+            self.clock_quarter_frame();
+            self.clock_half_frame();
         }
     }
 
@@ -674,74 +806,64 @@ impl Apu {
         self.dmc.supply_sample(byte);
     }
 
+    /// Run the sequencer action scheduled for `frame_cycle`, if any, and
+    /// wrap at the end of the sequence.
     fn clock_frame_counter(&mut self) {
-        let mode = (self.frame_counter & 0x80) != 0;
-
-        match self.frame_sequence {
-            0 | 2 => {
-                self.clock_envelopes();
-                self.clock_linear_counter();
-            }
-            1 => {
-                self.clock_envelopes();
-                self.clock_linear_counter();
-                self.clock_length_counters();
-                self.clock_sweeps();
-            }
-            3 => {
-                self.clock_envelopes();
-                self.clock_linear_counter();
-                self.clock_length_counters();
-                self.clock_sweeps();
-                // 4-step mode: the last step raises the frame interrupt
-                // unless inhibited by $4017 bit 6.
-                if !mode && !self.frame_interrupt_inhibit {
-                    self.frame_interrupt = true;
+        if self.frame_5step {
+            match self.frame_cycle {
+                FRAME_QUARTER_1 | FRAME_QUARTER_3 => self.clock_quarter_frame(),
+                FRAME_HALF_1 | FRAME_5STEP_HALF_2 => {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
                 }
+                FRAME_5STEP_PERIOD => self.frame_cycle = 0,
+                _ => {}
             }
-            4 if mode => {
-                self.clock_envelopes();
-                self.clock_linear_counter();
-                self.clock_length_counters();
-                self.clock_sweeps();
-            }
-            _ => {}
-        }
-
-        self.frame_sequence = if mode {
-            (self.frame_sequence + 1) % 5
         } else {
-            (self.frame_sequence + 1) % 4
-        };
+            match self.frame_cycle {
+                FRAME_QUARTER_1 | FRAME_QUARTER_3 => self.clock_quarter_frame(),
+                FRAME_HALF_1 => {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+                FRAME_4STEP_IRQ_FIRST => self.raise_frame_interrupt(),
+                FRAME_4STEP_HALF_2 => {
+                    self.raise_frame_interrupt();
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+                FRAME_4STEP_PERIOD => {
+                    self.raise_frame_interrupt();
+                    self.frame_cycle = 0;
+                }
+                _ => {}
+            }
+        }
     }
 
-    fn clock_envelopes(&mut self) {
+    /// The 4-step sequence raises the frame interrupt flag on each of its
+    /// last three cycles unless inhibited by $4017 bit 6.
+    fn raise_frame_interrupt(&mut self) {
+        if !self.frame_interrupt_inhibit {
+            self.frame_interrupt = true;
+        }
+    }
+
+    /// Quarter-frame clock: envelopes and the triangle linear counter.
+    fn clock_quarter_frame(&mut self) {
         self.pulse1.clock_envelope();
         self.pulse2.clock_envelope();
         self.noise.clock_envelope();
+        self.triangle.clock_linear_counter();
     }
 
-    fn clock_linear_counter(&mut self) {
-        if self.triangle.linear_counter_reload {
-            self.triangle.linear_counter = self.triangle.linear_counter_period;
-        } else if self.triangle.linear_counter > 0 {
-            self.triangle.linear_counter -= 1;
-        }
-    }
-
-    fn clock_length_counters(&mut self) {
-        if self.pulse1.length_counter > 0 {
-            self.pulse1.length_counter -= 1;
-        }
-        if self.pulse2.length_counter > 0 {
-            self.pulse2.length_counter -= 1;
-        }
-        if self.triangle.length_counter > 0 {
-            self.triangle.length_counter -= 1;
-        }
-        if self.noise.length_counter > 0 {
-            self.noise.length_counter -= 1;
-        }
+    /// Half-frame clock: length counters and sweep units.
+    fn clock_half_frame(&mut self) {
+        self.pulse1.length.clock();
+        self.pulse2.length.clock();
+        self.triangle.length.clock();
+        self.noise.length.clock();
+        self.clock_sweeps();
     }
 
     fn clock_sweeps(&mut self) {}
@@ -801,26 +923,84 @@ mod tests {
         }
     }
 
+    /// Read `$4015` bit 6 (and clear it).
+    fn frame_flag(apu: &mut Apu) -> bool {
+        apu.read_register(0x4015) & 0x40 != 0
+    }
+
     #[test]
-    fn frame_irq_set_on_last_step_of_4_step_mode() {
+    fn frame_irq_set_at_end_of_4_step_sequence() {
         let mut apu = Apu::new();
         write_4017(&mut apu, 0x00);
-        run(&mut apu, FRAME_STEP_CYCLES * 3);
+        run(&mut apu, FRAME_QUARTER_3);
         assert!(!apu.irq_pending(), "not before the fourth step");
-        run(&mut apu, FRAME_STEP_CYCLES);
+        run(&mut apu, FRAME_4STEP_IRQ_FIRST - FRAME_QUARTER_3);
         assert!(apu.irq_pending(), "set on the fourth step");
-        assert_ne!(apu.read_register(0x4015) & 0x40, 0);
+        assert!(frame_flag(&mut apu));
         assert!(!apu.irq_pending(), "$4015 read clears the frame flag");
-        assert_eq!(apu.read_register(0x4015) & 0x40, 0);
+        run(&mut apu, 3);
+        assert!(frame_flag(&mut apu), "re-set by the rest of the window");
+        run(&mut apu, 1);
+        assert!(!frame_flag(&mut apu), "stays clear once the window passed");
+    }
+
+    /// apu_test 6: the flag is raised on three consecutive cycles
+    /// (29828-29830 after the restart, 29831-29833 after an even-cycle
+    /// write) and each of them re-sets a flag cleared by a `$4015` read.
+    #[test]
+    fn frame_irq_flag_window_is_three_cycles() {
+        let mut apu = Apu::new();
+        run(&mut apu, 10); // even cycle: 3-cycle write delay
+        apu.write_register(0x4017, 0x00);
+        run(&mut apu, 29830);
+        assert!(!frame_flag(&mut apu), "clear at write+29830");
+        run(&mut apu, 1);
+        assert!(frame_flag(&mut apu), "first set at write+29831");
+        run(&mut apu, 1);
+        assert!(frame_flag(&mut apu), "set again at write+29832");
+        run(&mut apu, 1);
+        assert!(frame_flag(&mut apu), "last set at write+29833");
+        run(&mut apu, 1);
+        assert!(!frame_flag(&mut apu), "not set at write+29834");
+        run(&mut apu, 100);
+        assert!(!frame_flag(&mut apu));
+    }
+
+    /// The first flag comes 29831 cycles after a `$4017` write (3-cycle
+    /// delay plus 29828), 29832 after an odd-cycle write, and every 29830
+    /// cycles after that.
+    #[test]
+    fn frame_irq_period_is_29830_after_a_29831_first_frame() {
+        for odd in [false, true] {
+            let mut apu = Apu::new();
+            run(&mut apu, if odd { 11 } else { 10 });
+            apu.write_register(0x4017, 0x00);
+            let first = if odd { 29832 } else { 29831 };
+            run(&mut apu, first - 1);
+            assert!(!frame_flag(&mut apu), "odd={odd}: clear before first");
+            run(&mut apu, 1);
+            assert!(frame_flag(&mut apu), "odd={odd}: first flag");
+            // Clear the two remaining cycles of the window.
+            run(&mut apu, 2);
+            frame_flag(&mut apu);
+            for frame in 1..4 {
+                run(&mut apu, FRAME_4STEP_PERIOD - 3);
+                assert!(!frame_flag(&mut apu), "odd={odd}: frame {frame} early");
+                run(&mut apu, 1);
+                assert!(frame_flag(&mut apu), "odd={odd}: frame {frame} on time");
+                run(&mut apu, 2);
+                frame_flag(&mut apu);
+            }
+        }
     }
 
     #[test]
     fn frame_irq_held_until_acknowledged() {
         let mut apu = Apu::new();
         write_4017(&mut apu, 0x00);
-        run(&mut apu, FRAME_STEP_CYCLES * 4);
+        run(&mut apu, FRAME_4STEP_PERIOD);
         assert!(apu.irq_pending());
-        run(&mut apu, FRAME_STEP_CYCLES * 3);
+        run(&mut apu, FRAME_4STEP_PERIOD * 3);
         assert!(apu.irq_pending(), "flag is held, not pulsed");
     }
 
@@ -828,11 +1008,11 @@ mod tests {
     fn frame_irq_inhibited_and_cleared_by_4017_bit6() {
         let mut apu = Apu::new();
         write_4017(&mut apu, 0x40);
-        run(&mut apu, FRAME_STEP_CYCLES * 8);
+        run(&mut apu, FRAME_4STEP_PERIOD * 2);
         assert!(!apu.irq_pending(), "inhibit bit blocks the flag");
 
         write_4017(&mut apu, 0x00);
-        run(&mut apu, FRAME_STEP_CYCLES * 4);
+        run(&mut apu, FRAME_4STEP_PERIOD);
         assert!(apu.irq_pending());
         write_4017(&mut apu, 0x40);
         assert!(!apu.irq_pending(), "writing $4017 with inhibit clears it");
@@ -842,7 +1022,7 @@ mod tests {
     fn frame_irq_never_set_in_5_step_mode() {
         let mut apu = Apu::new();
         write_4017(&mut apu, 0x80);
-        run(&mut apu, FRAME_STEP_CYCLES * 10);
+        run(&mut apu, FRAME_5STEP_PERIOD * 3);
         assert!(!apu.irq_pending());
     }
 
@@ -850,10 +1030,10 @@ mod tests {
     fn write_4017_resets_sequencer() {
         let mut apu = Apu::new();
         write_4017(&mut apu, 0x00);
-        run(&mut apu, FRAME_STEP_CYCLES * 3 + 100);
-        // Reset: the 4th step is now four full periods away again.
+        run(&mut apu, FRAME_QUARTER_3 + 100);
+        // Reset: the flag is now a full sequence away again.
         write_4017(&mut apu, 0x00);
-        run(&mut apu, FRAME_STEP_CYCLES * 4 - 1);
+        run(&mut apu, FRAME_4STEP_IRQ_FIRST - 1);
         assert!(!apu.irq_pending());
         run(&mut apu, 1);
         assert!(apu.irq_pending());
@@ -864,9 +1044,161 @@ mod tests {
         let mut apu = Apu::new();
         apu.write_register(0x4015, 0x01);
         apu.write_register(0x4003, 0x08); // length index 1 -> 254
-        let before = apu.pulse1.length_counter;
+        run(&mut apu, 1); // the reload lands on the next cycle
+        assert_eq!(apu.pulse1.length.counter, 254);
         write_4017(&mut apu, 0x80);
-        assert_eq!(apu.pulse1.length_counter, before - 1);
+        assert_eq!(apu.pulse1.length.counter, 253);
+        write_4017(&mut apu, 0x00);
+        assert_eq!(
+            apu.pulse1.length.counter, 253,
+            "4-step write does not clock"
+        );
+    }
+
+    /// apu_test 5: half-frame clocks at 14913 and 29829 after the restart
+    /// in 4-step mode; at 0 (immediate), 14913 and 37281 in 5-step mode.
+    #[test]
+    fn length_counter_clock_schedule() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4003, 0x28); // length 4
+        write_4017(&mut apu, 0x00);
+        run(&mut apu, FRAME_HALF_1 - 1);
+        assert_eq!(apu.pulse1.length.counter, 4);
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 3);
+        run(&mut apu, FRAME_4STEP_HALF_2 - FRAME_HALF_1);
+        assert_eq!(apu.pulse1.length.counter, 2);
+        run(
+            &mut apu,
+            FRAME_4STEP_PERIOD + FRAME_HALF_1 - FRAME_4STEP_HALF_2,
+        );
+        assert_eq!(apu.pulse1.length.counter, 1);
+
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4003, 0x28);
+        write_4017(&mut apu, 0x80);
+        assert_eq!(apu.pulse1.length.counter, 3, "immediate clock");
+        run(&mut apu, FRAME_HALF_1);
+        assert_eq!(apu.pulse1.length.counter, 2);
+        run(&mut apu, FRAME_5STEP_HALF_2 - FRAME_HALF_1 - 1);
+        assert_eq!(apu.pulse1.length.counter, 2);
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 1);
+    }
+
+    /// apu_test 1 #6-#8: disabled channels neither keep nor reload a
+    /// length; the halt flag suspends clocking.
+    #[test]
+    fn length_counter_enable_and_halt() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4003, 0x28);
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 0, "disabled: no reload");
+        assert_eq!(apu.read_register(0x4015) & 0x0F, 0);
+
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4003, 0x28);
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 4);
+        apu.write_register(0x4015, 0x00);
+        assert_eq!(apu.pulse1.length.counter, 0, "disable clears at once");
+
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4000, 0x30); // halt
+        apu.write_register(0x4003, 0x28);
+        run(&mut apu, 1);
+        write_4017(&mut apu, 0x80);
+        write_4017(&mut apu, 0x80);
+        assert_eq!(apu.pulse1.length.counter, 4, "halted counter holds");
+    }
+
+    /// A reload that races a length clock on the following cycle loses when
+    /// the counter was non-zero; the halt flag written in the same cycle as
+    /// a clock does not stop that clock.
+    #[test]
+    fn length_reload_and_halt_land_after_the_clock() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4003, 0x28); // 4
+        write_4017(&mut apu, 0x00);
+        run(&mut apu, FRAME_HALF_1 - 1);
+        apu.write_register(0x4003, 0x08); // 254, written the cycle before the clock
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 3, "clocked reload is ignored");
+
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x01);
+        write_4017(&mut apu, 0x00);
+        run(&mut apu, FRAME_HALF_1 - 1);
+        apu.write_register(0x4003, 0x08);
+        run(&mut apu, 1);
+        assert_eq!(
+            apu.pulse1.length.counter, 254,
+            "reload of a zero counter works"
+        );
+
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4003, 0x28);
+        write_4017(&mut apu, 0x00);
+        run(&mut apu, FRAME_HALF_1 - 1);
+        apu.write_register(0x4000, 0x30); // halt, lands after the clock
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 3, "clock still happens");
+        run(&mut apu, FRAME_4STEP_HALF_2 - FRAME_HALF_1);
+        assert_eq!(apu.pulse1.length.counter, 3, "halted from then on");
+    }
+
+    /// apu_reset: power-up is as if $00 were written to $4017 (sequencer
+    /// running, IRQ enabled), with $4015 reading 0.
+    #[test]
+    fn power_up_state() {
+        let mut apu = Apu::new();
+        assert_eq!(apu.read_register(0x4015), 0);
+        run(
+            &mut apu,
+            FRAME_RESET_DELAY as u32 + FRAME_4STEP_IRQ_FIRST - 1,
+        );
+        assert!(!apu.irq_pending());
+        run(&mut apu, 1);
+        assert!(apu.irq_pending(), "frame IRQ runs from power-up");
+    }
+
+    /// apu_reset: reset clears $4015, re-writes the last $4017 value and
+    /// keeps the triangle's control flag.
+    #[test]
+    fn reset_clears_4015_rewrites_4017_and_keeps_triangle_control() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x0F);
+        apu.write_register(0x4008, 0xFF); // triangle control/halt
+        apu.write_register(0x4003, 0x28);
+        apu.write_register(0x400B, 0x28);
+        write_4017(&mut apu, 0x80);
+        run(&mut apu, 100);
+        assert_eq!(apu.read_register(0x4015) & 0x0F, 0x05);
+
+        apu.reset();
+        assert_eq!(apu.read_register(0x4015), 0, "$4015 cleared");
+        assert!(!apu.irq_pending());
+        apu.write_register(0x4003, 0x28);
+        run(&mut apu, 1);
+        assert_eq!(apu.pulse1.length.counter, 0, "channels disabled");
+        assert!(apu.triangle.control, "triangle control survives");
+
+        // The 5-step mode is re-applied after the reset delay, so no frame
+        // IRQ appears.
+        run(&mut apu, FRAME_5STEP_PERIOD * 2);
+        assert!(!apu.irq_pending());
+        assert!(apu.frame_5step);
+
+        // A halted triangle keeps its length once re-enabled.
+        apu.write_register(0x4015, 0x0F);
+        apu.write_register(0x400B, 0x18); // 2
+        apu.write_register(0x4003, 0x18);
+        run(&mut apu, FRAME_5STEP_PERIOD * 2);
+        assert_eq!(apu.read_register(0x4015) & 0x0F, 0x04);
     }
 
     /// Feed the DMC every byte it asks for while stepping.

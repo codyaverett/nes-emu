@@ -13,6 +13,7 @@ Contains debugging session notes and references:
 - `MAPPER_TRAIT_REFACTOR.md` - Mapper trait, one file per mapper, PPU CHR routing (#2)
 - `BUS_TICK_TIMING.md` - PPU and APU advance inside each CPU bus access, DMA as real cycles (#4)
 - `VBLANK_NMI_TIMING.md` - NMI line withdrawal, 2002 suppression window, sample dot, odd-frame skip (#12)
+- `APU_FRAME_COUNTER.md` - frame sequencer schedule, three-cycle IRQ flag window, length counter enable/halt, power-up and reset state (#18)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:

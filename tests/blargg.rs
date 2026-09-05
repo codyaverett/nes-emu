@@ -201,15 +201,12 @@ blargg_test!(
 blargg_test!(
     cpu_interrupts_5_branch_delays_irq,
     "cpu_interrupts_v2/rom_singles/5-branch_delays_irq.nes",
-    SHORT,
-    ignore = "PC column (which instruction the IRQ followed) matches for test_jmp, CK column is constant 05/06: the handler measures phase against the APU frame flag, which needs the exact 29830-cycle period and 3-cycle flag window (apu_test 6); Phase 5"
+    SHORT
 );
 blargg_test!(
     cpu_interrupts_all,
     "cpu_interrupts_v2/cpu_interrupts.nes",
-    MEDIUM,
-    ignore =
-        "fails in test 3 of 5 (see cpu_interrupts_3_nmi_and_irq); 1, 2 and 4 pass individually; Phase 5"
+    MEDIUM
 );
 
 // ---------------------------------------------------------------------
@@ -380,8 +377,7 @@ legacy_test!(
 blargg_test!(
     apu_test_1_len_ctr,
     "apu_test/rom_singles/1-len_ctr.nes",
-    SHORT,
-    ignore = "#4 Writing $80 to $4017 should clock length immediately; Phase 3/4"
+    SHORT
 );
 blargg_test!(
     apu_test_2_len_table,
@@ -401,14 +397,12 @@ blargg_test!(
 blargg_test!(
     apu_test_5_len_timing,
     "apu_test/rom_singles/5-len_timing.nes",
-    SHORT,
-    ignore = "#3 First length of mode 0 is too late; Phase 4"
+    SHORT
 );
 blargg_test!(
     apu_test_6_irq_flag_timing,
     "apu_test/rom_singles/6-irq_flag_timing.nes",
-    SHORT,
-    ignore = "#2 Flag first set too soon; Phase 4"
+    SHORT
 );
 blargg_test!(
     apu_test_7_dmc_basics,
@@ -420,35 +414,15 @@ blargg_test!(
     "apu_test/rom_singles/8-dmc_rates.nes",
     SHORT
 );
-blargg_test!(
-    apu_test_all,
-    "apu_test/apu_test.nes",
-    MEDIUM,
-    ignore = "fails in test 1 of 8 (length table, timing, or $4015); Phase 3/4"
-);
+blargg_test!(apu_test_all, "apu_test/apu_test.nes", MEDIUM);
 
 // ---------------------------------------------------------------------
 // apu_reset: APU state at power and after reset (uses the 0x81 reset
 // request)
 // ---------------------------------------------------------------------
-blargg_test!(
-    apu_reset_4015_cleared,
-    "apu_reset/4015_cleared.nes",
-    SHORT,
-    ignore = "#2 At power, $4015 should be cleared; Phase 3"
-);
-blargg_test!(
-    apu_reset_4017_timing,
-    "apu_reset/4017_timing.nes",
-    SHORT,
-    ignore = "#3 Frame IRQ flag should be set sooner after power/reset; Phase 3/4"
-);
-blargg_test!(
-    apu_reset_4017_written,
-    "apu_reset/4017_written.nes",
-    SHORT,
-    ignore = "#2 At power, $4017 should be written with $00; Phase 3"
-);
+blargg_test!(apu_reset_4015_cleared, "apu_reset/4015_cleared.nes", SHORT);
+blargg_test!(apu_reset_4017_timing, "apu_reset/4017_timing.nes", SHORT);
+blargg_test!(apu_reset_4017_written, "apu_reset/4017_written.nes", SHORT);
 blargg_test!(
     apu_reset_irq_flag_cleared,
     "apu_reset/irq_flag_cleared.nes",
@@ -457,14 +431,12 @@ blargg_test!(
 blargg_test!(
     apu_reset_len_ctrs_enabled,
     "apu_reset/len_ctrs_enabled.nes",
-    SHORT,
-    ignore = "#3 At reset, length counters should be enabled, triangle unaffected; Phase 3"
+    SHORT
 );
 blargg_test!(
     apu_reset_works_immediately,
     "apu_reset/works_immediately.nes",
-    SHORT,
-    ignore = "#2 At power, writes should work immediately; Phase 3"
+    SHORT
 );
 
 // ---------------------------------------------------------------------

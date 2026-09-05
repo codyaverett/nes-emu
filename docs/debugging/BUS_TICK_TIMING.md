@@ -98,4 +98,6 @@ inside it.
 - `ppu_vbl_nmi` 02 and 05-10 need exact vblank set/clear dots and NMI
   suppression; `apu_test` 1, 5 and 6 need exact length-counter and IRQ
   flag timing. Both are Phase 5 material now that the bus is cycle-exact.
+  Landed as issues 12 (docs/debugging/VBLANK_NMI_TIMING.md) and 18
+  (docs/debugging/APU_FRAME_COUNTER.md).
 - The DMC memory reader still bypasses the bus and does not stall the CPU.

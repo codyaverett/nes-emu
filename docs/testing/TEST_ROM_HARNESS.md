@@ -129,19 +129,19 @@ arms, so the unimplemented-opcode fallback was removed.
 |-------|------|---------|------------------------|
 | instr_test-v5 (16 singles + 2 combined) | 18 | 0 | |
 | cpu_timing_test6 | 1 | 0 | |
-| cpu_interrupts_v2 (5 + 1) | 4 | 2 | 1, 2 and 4 pass since issue 10, 3 since issue 12; 5 PC column right, CK column needs exact APU frame-flag timing (as apu_test 6); combined stops at 5 |
+| cpu_interrupts_v2 (5 + 1) | 6 | 0 | 1, 2 and 4 pass since issue 10, 3 since issue 12, 5 and the combined ROM since issue 18 (exact APU frame-flag period) |
 | ppu_vbl_nmi (10 + 1) | 11 | 0 | all pass since issue 12 (NMI line withdrawal, sample dot, odd-frame skip) |
 | ppu_open_bus | 1 | 0 | passes since issues 13 (decay latch) and 14 (attribute masking) |
 | sprite_hit_tests_2005.10.05 (11) | 1 | 10 | 11 passes since Phase 4; 01 #7, 02 #2, 03 #2, 04 #2, 05 #4, 06 #3, 07 #6, 08 #3; 09/10 hang |
 | sprite_overflow_tests (5) | 1 | 4 | 1 #7, 2 #9, 4 #7, 3 hangs; 5.Emulator passes |
-| apu_test (8 + 1) | 5 | 4 | 2, 3, 4, 7, 8 pass since the IRQ line landed (Phase 3); 1 #4, 5 #3, 6 #2 remain; combined fails in test 1 |
-| apu_reset (6) | 1 | 5 | 4015_cleared #2, 4017_timing #3, 4017_written #2, len_ctrs_enabled #3, works_immediately #2; irq_flag_cleared passes |
+| apu_test (8 + 1) | 9 | 0 | 2, 3, 4, 7, 8 pass since the IRQ line landed (Phase 3); 1, 5, 6 and the combined ROM since issue 18 (nesdev sequencer schedule, length counter enable/halt) |
+| apu_reset (6) | 6 | 0 | all pass since issue 18 (power-up as a $4017 = $00 write, reset re-writes $4017 and keeps the triangle control flag); 4017_timing reports a delay of 8 |
 | oam_read | 1 | 0 | |
 | oam_stress | 1 | 0 | passes since attribute bits 2-4 are masked (issue 14) |
 | mmc3_test_2 (6) | 4 | 2 | 4 needs cycle-exact sprite fetch positions (Phase 5); 6 is the alternate revision, exclusive with 5 |
-| **Total blargg** | **49** | **27** | |
+| **Total blargg** | **60** | **16** | |
 
-Combined with nestest (7 tests): 56 integration tests pass, 27 are ignored,
+Combined with nestest (7 tests): 67 integration tests pass, 16 are ignored,
 plus the ignored game_frames fingerprint run.
 
 ### Expected progression
@@ -151,7 +151,7 @@ plus the ignored game_frames fingerprint run.
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
 | Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, apu_reset (landed: apu_test 2/3/4/7/8 and mmc3_test_2 1/2/3/5 pass) |
 | Phase 4 (bus-tick timing) | landed: ppu_vbl_nmi 01/03 and sprite_hit 11 now pass |
-| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, mmc3_test_2 4, apu_test 1/5/6 (and cpu_interrupts_v2 5 with the APU frame-flag fix); landed: oam_stress via issue 14, ppu_open_bus via issues 13 and 14, ppu_vbl_nmi and cpu_interrupts_v2 3 via issue 12 |
+| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, mmc3_test_2 4; landed: oam_stress via issue 14, ppu_open_bus via issues 13 and 14, ppu_vbl_nmi and cpu_interrupts_v2 3 via issue 12, apu_test 1/5/6, apu_reset and cpu_interrupts_v2 5 via issue 18 |
 | Interrupt sampling (issue 10) | landed: cpu_interrupts_v2 1/2/4 and ppu_vbl_nmi 04 now pass |
 
 ## Debug API reference (`src/system.rs`)

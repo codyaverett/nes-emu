@@ -147,6 +147,10 @@ copy.
   linear counter, length counters and sweeps immediately.
 - `pub fn irq_pending(&self) -> bool` returns `frame_interrupt || dmc.interrupt`.
 
+Superseded by issue 18: the 7457-cycle `frame_divider` is now a
+`frame_cycle` counter on the nesdev schedule and the flag is raised on
+three consecutive cycles. See docs/debugging/APU_FRAME_COUNTER.md.
+
 ### 6. APU DMC playback and IRQ
 **File:** `src/apu/mod.rs`, `Dmc`
 

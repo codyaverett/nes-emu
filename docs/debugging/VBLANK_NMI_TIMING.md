@@ -61,5 +61,6 @@ decision one dot later). Frame parity is the PPU's own frame counter.
 ## Still open
 
 - `cpu_interrupts_v2` 5 and the combined ROM need exact APU frame-flag
-  timing (same defect as `apu_test` 6).
+  timing (same defect as `apu_test` 6). Landed as issue 18
+  (docs/debugging/APU_FRAME_COUNTER.md).
 - Per-cycle sprite evaluation (issue 11) is the last Phase 5 item.
