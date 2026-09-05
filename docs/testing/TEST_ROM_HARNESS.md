@@ -137,8 +137,8 @@ arms, so the unimplemented-opcode fallback was removed.
 | apu_reset (6) | 1 | 5 | 4015_cleared #2, 4017_timing #3, 4017_written #2, len_ctrs_enabled #3, works_immediately #2; irq_flag_cleared passes |
 | oam_read | 1 | 0 | |
 | oam_stress | 0 | 1 | every 4th OAM byte reads back wrong |
-| mmc3_test_2 (6) | 0 | 6 | IRQ counter never clocked: 1 #3, 2 #2, 3 #4, 5 #2, 6 #2; 4 hangs |
-| **Total blargg** | **27** | **49** | |
+| mmc3_test_2 (6) | 4 | 2 | 4 needs cycle-exact sprite fetch positions (Phase 5); 6 is the alternate revision, exclusive with 5 |
+| **Total blargg** | **31** | **45** | |
 
 Combined with nestest: 20 tests pass, 62 are ignored.
 
@@ -147,9 +147,9 @@ Combined with nestest: 20 tests pass, 62 are ignored.
 | Phase | Suites expected to flip to pass |
 |-------|---------------------------------|
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
-| Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, mmc3_test_2 1/2/4/5/6, apu_reset (CPU/APU half landed: apu_test 2/3/4/7/8 now pass) |
+| Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, apu_reset (landed: apu_test 2/3/4/7/8 and mmc3_test_2 1/2/3/5 pass) |
 | Phase 4 (bus-tick timing) | ppu_vbl_nmi, apu_test 1/5/6 |
-| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 3 |
+| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 4 |
 
 ## Debug API reference (`src/system.rs`)
 

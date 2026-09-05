@@ -38,9 +38,15 @@ pub trait Mapper: Send {
     /// Acknowledge the mapper IRQ.
     fn clear_irq(&mut self) {}
 
-    /// Scanline clock for mappers with a scanline counter (MMC3, MMC5).
-    /// No-op for everything else.
+    /// Scanline clock for mappers that count scanlines directly (MMC5).
+    /// Called by the PPU once per rendered scanline. No-op for everything
+    /// else.
     fn clock_scanline(&mut self) {}
+
+    /// Rising edge of PPU address line A12, already filtered by the PPU so
+    /// that A12 must have been low for several PPU cycles first. MMC3 clocks
+    /// its IRQ counter here. No-op for everything else.
+    fn ppu_a12_rise(&mut self) {}
 }
 
 /// Mapper used when no cartridge is loaded: open bus everywhere.

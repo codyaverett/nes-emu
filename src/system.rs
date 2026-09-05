@@ -36,9 +36,9 @@ pub struct System {
     /// Latched rising edge of the PPU NMI output. NMI is edge-triggered: the
     /// edge is captured here and serviced exactly once by `poll_interrupts`.
     nmi_pending: bool,
-    /// Mapper contribution to the IRQ line (level). Always false for now; the
-    /// MMC3 lane will set this from the mapper's scanline counter (see
-    /// docs/debugging/INTERRUPT_LINE.md, follow-up section).
+    /// Extra mapper-style contribution to the IRQ line (level), OR'd with the
+    /// loaded mapper's own `irq_pending()`. Used by tests to drive the line
+    /// without a cartridge that has an IRQ counter.
     pub mapper_irq: bool,
 }
 
@@ -2694,7 +2694,12 @@ impl System {
             return Some(7);
         }
 
-        let irq_line = self.apu.irq_pending() || self.mapper_irq;
+        let mapper_irq = self.mapper_irq
+            || self
+                .cartridge
+                .as_ref()
+                .is_some_and(|cart| cart.mapper.irq_pending());
+        let irq_line = self.apu.irq_pending() || mapper_irq;
         if irq_line && (self.cpu_status & 0x04) == 0 {
             self.irq();
             return Some(7);

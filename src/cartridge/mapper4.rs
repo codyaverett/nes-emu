@@ -8,8 +8,9 @@
 //!   $C000 IRQ latch,   $C001 IRQ reload,
 //!   $E000 IRQ disable, $E001 IRQ enable.
 //!
-//! `clock_scanline` implements the scanline counter. Nothing calls it yet;
-//! wiring it to the PPU A12 edge and delivering the IRQ is a follow-up.
+//! The IRQ counter is clocked by `ppu_a12_rise`, which the PPU raises on
+//! each filtered rising edge of address line A12. `irq_pending` is OR'd into
+//! the CPU IRQ line by `System::poll_interrupts`.
 
 use super::mapper::{Chr, Mapper};
 use super::Mirroring;
@@ -235,7 +236,7 @@ impl Mapper for Mapper4 {
         self.irq_pending = false;
     }
 
-    fn clock_scanline(&mut self) {
+    fn ppu_a12_rise(&mut self) {
         if self.irq_counter == 0 || self.irq_reload {
             self.irq_counter = self.irq_latch;
             self.irq_reload = false;
@@ -388,17 +389,17 @@ mod tests {
         m.cpu_write(0xC001, 0); // reload
         m.cpu_write(0xE001, 0); // enable
 
-        m.clock_scanline(); // reload -> 3
+        m.ppu_a12_rise(); // reload -> 3
         assert!(!m.irq_pending());
-        m.clock_scanline(); // 2
-        m.clock_scanline(); // 1
+        m.ppu_a12_rise(); // 2
+        m.ppu_a12_rise(); // 1
         assert!(!m.irq_pending());
-        m.clock_scanline(); // 0 -> pending
+        m.ppu_a12_rise(); // 0 -> pending
         assert!(Mapper::irq_pending(&m));
 
         m.clear_irq();
         assert!(!m.irq_pending());
-        m.clock_scanline(); // counter 0 -> reload to 3
+        m.ppu_a12_rise(); // counter 0 -> reload to 3
         assert_eq!(m.irq_counter, 3);
     }
 
@@ -408,11 +409,11 @@ mod tests {
         m.cpu_write(0xC000, 0);
         m.cpu_write(0xC001, 0);
         m.cpu_write(0xE001, 0);
-        m.clock_scanline(); // latch 0 -> pending immediately
+        m.ppu_a12_rise(); // latch 0 -> pending immediately
         assert!(Mapper::irq_pending(&m));
         m.cpu_write(0xE000, 0);
         assert!(!Mapper::irq_pending(&m));
-        m.clock_scanline();
+        m.ppu_a12_rise();
         assert!(!Mapper::irq_pending(&m));
     }
 }

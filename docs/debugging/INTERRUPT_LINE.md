@@ -3,7 +3,7 @@
 **Date:** 2026-09-04
 **Type:** Architectural Fix (CPU interrupt machinery, APU IRQ sources)
 **Severity:** Critical (games that rely on IRQs could not run)
-**Status:** CPU/APU half complete; MMC3 half deferred (see follow-up section)
+**Status:** Complete (CPU/APU half 2026-09-04, MMC3 half 2026-09-05)
 **Issue:** #3 (Phase 3 of docs/plans/ACCURACY_ROADMAP.md)
 
 ## Executive Summary
@@ -220,19 +220,40 @@ Needs a human pass:
   scrolling, sprite 0 status bar.
 - Listen for audio pitch changes from the per-cycle APU stepping.
 
-## MMC3 Follow-up (still open under #3)
+## MMC3 Half (landed 2026-09-05)
 
-The mapper half is deferred because another lane is refactoring
-`src/cartridge` into a `Mapper` trait. Once that lands, the follow-up needs to:
+**Files:** `src/ppu/mod.rs`, `src/cartridge/mapper.rs`, `src/cartridge/mapper4.rs`, `src/system.rs`
 
-1. Clock the MMC3 scanline counter once per scanline at PPU cycle 260 when
-   rendering is enabled (first step), then switch to A12 rising-edge clocking
-   in Phase 5.
-2. After the PPU dots for an instruction, copy the mapper's `irq_pending`
-   level into `System::mapper_irq`. The CPU already ORs that field into the
-   IRQ line; nothing in `poll_interrupts` has to change.
-3. Clear the mapper flag on `$E000` writes (acknowledge) so the level drops.
-4. Verify with `mmc3_test_2` tests 1-4 and the SMB3 / TMNT status bars.
+The MMC3 counts rising edges of PPU address line A12, not scanlines. The first
+attempt clocked the counter once per scanline at PPU cycle 260; that renders
+status bars but cannot pass `mmc3_test_2`, whose first three tests toggle A12
+by writing `$2006`. So the PPU now models the address bus:
+
+1. `Ppu::drive_addr_bus(addr, mapper)` is called wherever the hardware puts a
+   new value on the PPU address bus: every `read_vram`/`write_vram` (tile,
+   attribute, pattern and sprite fetches), the second `$2006` write, and the
+   post-increment `v` after a `$2007` access.
+2. A12 must have been low for at least `A12_FILTER_CYCLES` (8) PPU cycles
+   before a rise counts. This mirrors the MMC3 hardware filter and ignores the
+   rapid toggling inside a tile fetch when background and sprites use
+   different pattern tables. The low-time counter is advanced in `Ppu::step`.
+3. A filtered rise calls the new `Mapper::ppu_a12_rise` hook. MMC3 implements
+   the counter there (`clock_scanline` remains for MMC5, which really counts
+   scanlines).
+4. Sprite fetches (cycles 257-320) now run whenever rendering is enabled, not
+   only when sprites are shown, and empty slots fetch dummy tile `$FF` from the
+   sprite table, as on hardware. The pre-render line performs the same eight
+   dummy fetches. Those fetches are what produce the one A12 rise per scanline
+   (241 per frame) that games rely on.
+5. `System::poll_interrupts` ORs the loaded mapper's `irq_pending()` into the
+   IRQ line. `$E000` writes acknowledge, so the level drops when the handler
+   does what real code does.
+
+**Results:** `mmc3_test_2` 1, 2, 3 and 5 pass. Test 4 (scanline timing) needs
+the sprite fetches spread across cycles 257-320 at their exact positions
+rather than batched at 257; that is Phase 5. Test 6 checks the alternate MMC3
+revision, which behaves differently from test 5 on reload-to-zero, so an
+emulator passes one of the two by design.
 
 ## References
 

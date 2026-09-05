@@ -508,36 +508,32 @@ blargg_test!(
 blargg_test!(
     mmc3_1_clocking,
     "mmc3_test_2/rom_singles/1-clocking.nes",
-    SHORT,
-    ignore = "#3 Should decrement when A12 is toggled via PPUADDR (MMC3 IRQ counter never clocked); Phase 3"
+    SHORT
 );
 blargg_test!(
     mmc3_2_details,
     "mmc3_test_2/rom_singles/2-details.nes",
-    SHORT,
-    ignore = "#2 Counter isn't working when reloaded with 255; Phase 3"
+    SHORT
 );
 blargg_test!(
     mmc3_3_a12_clocking,
     "mmc3_test_2/rom_singles/3-A12_clocking.nes",
-    SHORT,
-    ignore = "#4 Should be clocked when A12 changes to 1 via PPUADDR write; Phase 5"
+    SHORT
 );
 blargg_test!(
     mmc3_4_scanline_timing,
     "mmc3_test_2/rom_singles/4-scanline_timing.nes",
     SHORT,
-    ignore = "hangs waiting for MMC3 IRQ; Phase 3"
+    ignore = "never reports: needs cycle-exact sprite fetch positions in 257-320; Phase 5"
 );
 blargg_test!(
     mmc3_5_mmc3,
     "mmc3_test_2/rom_singles/5-MMC3.nes",
-    SHORT,
-    ignore = "#2 Should reload and set IRQ every clock when reload is 0; Phase 3"
+    SHORT
 );
 blargg_test!(
     mmc3_6_mmc3_alt,
     "mmc3_test_2/rom_singles/6-MMC3_alt.nes",
     SHORT,
-    ignore = "#2 IRQ shouldn't be set when reloading to 0 (MMC3 alt revision); Phase 3"
+    ignore = "#2 tests the alternate MMC3 revision (no IRQ on reload to 0); mutually exclusive with 5-MMC3 which we pass"
 );

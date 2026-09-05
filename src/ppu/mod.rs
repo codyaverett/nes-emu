@@ -1,6 +1,9 @@
 use crate::cartridge::{Mapper, Mirroring};
 use bitflags::bitflags;
 
+/// PPU cycles A12 must stay low before the next rising edge counts.
+const A12_FILTER_CYCLES: u16 = 8;
+
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
 
@@ -73,6 +76,12 @@ pub struct Ppu {
 
     pub scanline: u16,
     pub cycle: u16,
+
+    /// State of PPU address line A12 the last time the address bus was
+    /// driven, plus how many PPU cycles it has been low. Together they
+    /// implement the MMC3 A12 edge filter (see `drive_addr_bus`).
+    a12_last: bool,
+    a12_low_cycles: u16,
     pub frame: u64,
 
     pub frame_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
@@ -125,6 +134,8 @@ impl Ppu {
             palette: [0; 32],
             scanline: 0,
             cycle: 0,
+            a12_last: false,
+            a12_low_cycles: 0,
             frame: 0,
             frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
             nmi_interrupt: false,
@@ -170,6 +181,8 @@ impl Ppu {
         self.ppu_data_buffer = 0;
         self.scanline = 0;
         self.cycle = 0;
+        self.a12_last = false;
+        self.a12_low_cycles = 0;
         self.v = 0;
         self.t = 0;
         self.x = 0;
@@ -201,7 +214,7 @@ impl Ppu {
             0x2003 => self.write_oam_addr(value),
             0x2004 => self.write_oam_data(value),
             0x2005 => self.write_scroll(value),
-            0x2006 => self.write_ppu_addr(value),
+            0x2006 => self.write_ppu_addr(value, mapper),
             0x2007 => self.write_ppu_data(value, mapper),
             _ => {}
         }
@@ -234,6 +247,7 @@ impl Ppu {
         } else {
             self.v = (self.v + 1) & 0x7FFF;
         }
+        self.drive_addr_bus(self.v, mapper);
         result
     }
 
@@ -280,7 +294,7 @@ impl Ppu {
         self.w = !self.w;
     }
 
-    fn write_ppu_addr(&mut self, value: u8) {
+    fn write_ppu_addr(&mut self, value: u8, mapper: &mut dyn Mapper) {
         if !self.w {
             // First write (high byte)
             self.t = (self.t & 0x00FF) | ((value as u16 & 0x3F) << 8);
@@ -288,6 +302,7 @@ impl Ppu {
             // Second write (low byte)
             self.t = (self.t & 0xFF00) | value as u16;
             self.v = self.t; // Copy t to v
+            self.drive_addr_bus(self.v, mapper);
         }
         self.w = !self.w;
     }
@@ -301,13 +316,30 @@ impl Ppu {
         } else {
             self.v = (self.v + 1) & 0x7FFF;
         }
+        self.drive_addr_bus(self.v, mapper);
     }
 
     pub fn _oam_dma(&mut self, data: &[u8; 256]) {
         self.oam_data.copy_from_slice(data);
     }
 
+    /// Record a new value on the PPU address bus and report a filtered A12
+    /// rising edge to the mapper. The MMC3 only counts a rise if A12 was low
+    /// for a few cycles first, which ignores the rapid toggling between
+    /// pattern fetches when background and sprites use different tables.
+    fn drive_addr_bus(&mut self, addr: u16, mapper: &mut dyn Mapper) {
+        let a12 = addr & 0x1000 != 0;
+        if a12 {
+            if !self.a12_last && self.a12_low_cycles >= A12_FILTER_CYCLES {
+                mapper.ppu_a12_rise();
+            }
+            self.a12_low_cycles = 0;
+        }
+        self.a12_last = a12;
+    }
+
     fn read_vram(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
+        self.drive_addr_bus(addr, mapper);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
             0x2000..=0x2FFF => {
@@ -332,6 +364,7 @@ impl Ppu {
     }
 
     fn write_vram(&mut self, addr: u16, value: u8, mapper: &mut dyn Mapper) {
+        self.drive_addr_bus(addr, mapper);
         match addr {
             0x0000..=0x1FFF => mapper.ppu_write(addr, value),
             0x2000..=0x2FFF => {
@@ -401,6 +434,16 @@ impl Ppu {
         let rendering_enabled =
             self.mask.contains(PpuMask::SHOW_BG) || self.mask.contains(PpuMask::SHOW_SPRITES);
 
+        if !self.a12_last {
+            self.a12_low_cycles = self.a12_low_cycles.saturating_add(1);
+        }
+
+        // Scanline clock for mappers that count scanlines directly (MMC5).
+        // MMC3 is clocked from A12 edges instead; see `drive_addr_bus`.
+        if rendering_enabled && self.cycle == 260 && (self.scanline < 240 || self.scanline == 261) {
+            mapper.clock_scanline();
+        }
+
         if self.scanline < 240 {
             // Visible scanlines (0-239)
             if self.cycle == 1 {
@@ -417,8 +460,11 @@ impl Ppu {
                 self.evaluate_sprites();
             }
 
-            // Sprite fetching happens during cycles 257-320
-            if self.cycle == 257 && self.mask.contains(PpuMask::SHOW_SPRITES) {
+            // Sprite fetching happens during cycles 257-320. The hardware
+            // performs all eight fetches whenever rendering is enabled,
+            // using tile $FF for empty slots; those dummy fetches are what
+            // toggle A12 for the MMC3 scanline counter.
+            if self.cycle == 257 && rendering_enabled {
                 self.fetch_sprites(mapper);
             }
 
@@ -497,6 +543,12 @@ impl Ppu {
 
             // Pre-render scanline updates
             if rendering_enabled {
+                // Sprite fetch slot (cycles 257-320) runs here too, with all
+                // eight slots empty; it is the 241st MMC3 clock of a frame.
+                if self.cycle == 257 {
+                    self.sprite_count = 0;
+                    self.fetch_sprites(mapper);
+                }
                 // Run the same tile fetching pipeline as visible scanlines
                 // This primes the shift registers for the first scanline
                 if (self.cycle >= 1 && self.cycle <= 256)
@@ -848,7 +900,21 @@ impl Ppu {
             8
         };
 
-        for i in 0..self.sprite_count.min(8) {
+        let sprite_count = self.sprite_count.min(8);
+        for i in 0..8u8 {
+            if i >= sprite_count {
+                // Empty slot: the hardware still fetches tile $FF from the
+                // sprite pattern table (always $1000 in 8x16 mode).
+                let base = if sprite_height == 16 || self.ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
+                    0x1000
+                } else {
+                    0x0000
+                };
+                let dummy = base | 0x0FF0;
+                self.drive_addr_bus(dummy, mapper);
+                self.drive_addr_bus(dummy + 8, mapper);
+                continue;
+            }
             let oam_offset = i as usize * 4;
             let y_pos = self.secondary_oam[oam_offset];
             let tile_index = self.secondary_oam[oam_offset + 1];
@@ -888,8 +954,8 @@ impl Ppu {
             };
 
             // Fetch pattern data
-            let low_byte = mapper.ppu_read(pattern_addr & 0x1FFF);
-            let high_byte = mapper.ppu_read((pattern_addr + 8) & 0x1FFF);
+            let low_byte = self.read_vram(pattern_addr & 0x1FFF, mapper);
+            let high_byte = self.read_vram((pattern_addr + 8) & 0x1FFF, mapper);
 
             // Handle horizontal flip
             let (low, high) = if (attributes & 0x40) != 0 {
