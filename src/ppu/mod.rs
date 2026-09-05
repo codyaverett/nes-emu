@@ -227,7 +227,18 @@ impl Ppu {
         result
     }
 
+    /// $2004 read. Never modifies OAMADDR.
+    ///
+    /// While rendering is active the PPU's sprite evaluation unit owns the
+    /// OAM bus, so the CPU sees whatever byte it is examining. During the
+    /// secondary OAM clear (cycles 1-64) that is always $FF. For the rest of
+    /// the line we return `oam_data[oam_addr]`; this is an approximation
+    /// until per-cycle sprite evaluation lands (issue 11), at which point the
+    /// read should follow the evaluation unit's own OAM pointer.
     fn read_oam_data(&self) -> u8 {
+        if self.is_rendering() && (1..=64).contains(&self.cycle) {
+            return 0xFF;
+        }
         self.oam_data[self.oam_addr as usize]
     }
 
@@ -270,13 +281,48 @@ impl Ppu {
         self.mask = PpuMask::from_bits_truncate(value);
     }
 
+    /// $2003 write. The OAMADDR corruption that a write during rendering
+    /// causes on hardware is intentionally not modelled here.
     fn write_oam_addr(&mut self, value: u8) {
         self.oam_addr = value;
     }
 
+    /// $2004 write.
+    ///
+    /// Outside rendering the byte is stored at OAMADDR and OAMADDR advances by
+    /// one. Bits 2-4 of every sprite's attribute byte (offset 2 of each
+    /// 4-byte entry) do not physically exist, so they are dropped on write and
+    /// always read back as 0. OAM DMA funnels through this path too.
+    ///
+    /// During rendering the data is ignored, but OAMADDR still performs the
+    /// glitchy increment documented on nesdev: bits 2-7 advance by one sprite
+    /// (4 bytes) while bits 0-1 are left untouched.
     fn write_oam_data(&mut self, value: u8) {
-        self.oam_data[self.oam_addr as usize] = value;
+        if self.is_rendering() {
+            let high = (self.oam_addr & 0xFC).wrapping_add(4);
+            self.oam_addr = high | (self.oam_addr & 0x03);
+            return;
+        }
+        self.oam_data[self.oam_addr as usize] = Self::mask_oam_byte(self.oam_addr, value);
         self.oam_addr = self.oam_addr.wrapping_add(1);
+    }
+
+    /// Drop the unimplemented bits 2-4 of attribute bytes; other bytes pass
+    /// through unchanged.
+    fn mask_oam_byte(addr: u8, value: u8) -> u8 {
+        if addr & 0x03 == 2 {
+            value & 0xE3
+        } else {
+            value
+        }
+    }
+
+    /// True while the PPU is actively rendering: background or sprites are
+    /// enabled and the current line is visible or the pre-render line.
+    fn is_rendering(&self) -> bool {
+        let enabled =
+            self.mask.contains(PpuMask::SHOW_BG) || self.mask.contains(PpuMask::SHOW_SPRITES);
+        enabled && (self.scanline < 240 || self.scanline == 261)
     }
 
     fn write_scroll(&mut self, value: u8) {
@@ -320,7 +366,9 @@ impl Ppu {
     }
 
     pub fn _oam_dma(&mut self, data: &[u8; 256]) {
-        self.oam_data.copy_from_slice(data);
+        for (i, (dst, src)) in self.oam_data.iter_mut().zip(data).enumerate() {
+            *dst = Self::mask_oam_byte(i as u8, *src);
+        }
     }
 
     /// Record a new value on the PPU address bus and report a filtered A12
@@ -1179,5 +1227,102 @@ mod tests {
         assert_eq!(a(Mirroring::SingleScreenLower, 0x2C05), 0x005);
         assert_eq!(a(Mirroring::SingleScreenUpper, 0x2005), 0x405);
         assert_eq!(a(Mirroring::FourScreen, 0x2C00), 0xC00);
+    }
+
+    // -----------------------------------------------------------------
+    // OAM ($2003/$2004) behaviour, issue 14
+    // -----------------------------------------------------------------
+
+    fn oam_ppu(scanline: u16, cycle: u16, mask: PpuMask) -> Ppu {
+        let mut ppu = Ppu::new();
+        ppu.scanline = scanline;
+        ppu.cycle = cycle;
+        ppu.mask = mask;
+        ppu
+    }
+
+    fn oam_write(ppu: &mut Ppu, addr: u8, value: u8) {
+        let mut mapper = Mapper3::new(vec![0; 0x8000], tagged_chr(1), Mirroring::Vertical);
+        ppu.write_register(0x2003, addr, &mut mapper);
+        ppu.write_register(0x2004, value, &mut mapper);
+    }
+
+    fn oam_read(ppu: &mut Ppu, addr: u8) -> u8 {
+        let mut mapper = Mapper3::new(vec![0; 0x8000], tagged_chr(1), Mirroring::Vertical);
+        ppu.write_register(0x2003, addr, &mut mapper);
+        ppu.read_register(0x2004, &mut mapper)
+    }
+
+    #[test]
+    fn oam_attribute_bytes_drop_bits_2_to_4() {
+        let mut ppu = oam_ppu(241, 10, PpuMask::empty());
+        for addr in 0u8..8 {
+            oam_write(&mut ppu, addr, 0xFF);
+        }
+        for addr in 0u8..8 {
+            let expected = if addr & 3 == 2 { 0xE3 } else { 0xFF };
+            assert_eq!(oam_read(&mut ppu, addr), expected, "OAM[{addr}]");
+        }
+    }
+
+    #[test]
+    fn oam_write_in_vblank_stores_and_increments_by_one() {
+        let mut ppu = oam_ppu(241, 10, PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+        oam_write(&mut ppu, 0x13, 0x42);
+        assert_eq!(ppu.oam_addr, 0x14);
+        assert_eq!(oam_read(&mut ppu, 0x13), 0x42);
+        assert_eq!(ppu.oam_addr, 0x13, "reads do not move OAMADDR");
+    }
+
+    #[test]
+    fn oam_write_with_rendering_disabled_is_normal_on_visible_line() {
+        let mut ppu = oam_ppu(100, 30, PpuMask::empty());
+        oam_write(&mut ppu, 0x20, 0x99);
+        assert_eq!(ppu.oam_addr, 0x21);
+        assert_eq!(oam_read(&mut ppu, 0x20), 0x99);
+    }
+
+    #[test]
+    fn oam_read_returns_ff_during_secondary_oam_clear() {
+        let mut ppu = oam_ppu(241, 10, PpuMask::empty());
+        oam_write(&mut ppu, 0x05, 0x37);
+        ppu.mask = PpuMask::SHOW_SPRITES;
+
+        for (scanline, cycle) in [(0, 1), (100, 32), (239, 64), (261, 10)] {
+            ppu.scanline = scanline;
+            ppu.cycle = cycle;
+            assert_eq!(
+                oam_read(&mut ppu, 0x05),
+                0xFF,
+                "line {scanline} cycle {cycle}"
+            );
+        }
+
+        ppu.scanline = 100;
+        ppu.cycle = 65;
+        assert_eq!(oam_read(&mut ppu, 0x05), 0x37, "after the clear window");
+        ppu.cycle = 0;
+        assert_eq!(oam_read(&mut ppu, 0x05), 0x37, "idle cycle 0");
+        ppu.scanline = 241;
+        ppu.cycle = 32;
+        assert_eq!(oam_read(&mut ppu, 0x05), 0x37, "vblank");
+    }
+
+    #[test]
+    fn oam_write_during_rendering_is_ignored_with_glitchy_increment() {
+        let mut ppu = oam_ppu(241, 10, PpuMask::empty());
+        oam_write(&mut ppu, 0x07, 0x11);
+        ppu.mask = PpuMask::SHOW_BG;
+        ppu.scanline = 50;
+        ppu.cycle = 200;
+
+        oam_write(&mut ppu, 0x07, 0xEE);
+        assert_eq!(ppu.oam_addr, 0x0B, "bits 2-7 advance by one sprite");
+        ppu.oam_addr = 0xFE;
+        oam_write(&mut ppu, 0xFE, 0xEE);
+        assert_eq!(ppu.oam_addr, 0x02, "wraps without touching bits 0-1");
+
+        ppu.mask = PpuMask::empty();
+        assert_eq!(oam_read(&mut ppu, 0x07), 0x11, "data was not stored");
     }
 }

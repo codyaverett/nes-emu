@@ -492,12 +492,7 @@ blargg_test!(
 // OAM
 // ---------------------------------------------------------------------
 blargg_test!(oam_read, "oam_read/oam_read.nes", SHORT);
-blargg_test!(
-    oam_stress,
-    "oam_stress/oam_stress.nes",
-    LONG,
-    ignore = "fails, OAM readback pattern shows every 4th byte wrong; Phase 5"
-);
+blargg_test!(oam_stress, "oam_stress/oam_stress.nes", LONG);
 
 // ---------------------------------------------------------------------
 // mmc3_test_2: MMC3 IRQ counter and A12 clocking

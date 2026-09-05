@@ -626,3 +626,53 @@ cargo build --bin nes-emu
 **Final Build:** ✅ No errors, 2 harmless warnings
 
 **Game Compatibility:** Ready for testing with Super Mario Bros, Zelda, Metroid, and other scrolling games
+
+---
+
+## OAM READ/WRITE BEHAVIOUR (Issue 14)
+
+**Date:** 2026-09-05
+**Discovered:** blargg oam_stress reported every fourth OAM byte reading back wrong
+
+### Symptom
+
+oam_stress printed a 16x16 grid with a `*` in every column 2, 6, 10 and 14
+(the attribute byte of each 4-byte sprite entry) and failed with code
+59916E5B. oam_read passed because it only checks that reads follow OAMADDR.
+
+### Root Cause
+
+Bits 2-4 of each sprite's attribute byte do not exist in the PPU's OAM
+memory. Hardware always reads them back as 0, but `write_oam_data` stored
+the full byte, so a write of $FF read back as $FF instead of $E3.
+
+### Fix (`src/ppu/mod.rs`)
+
+1. **Attribute masking:** `mask_oam_byte` drops bits 2-4 on offset 2 of each
+   sprite before storing. OAM DMA funnels through `$2004` so it is covered
+   too; the unused `_oam_dma` helper masks as well for consistency.
+2. **`$2004` reads during rendering:** with background or sprites enabled on
+   a visible or pre-render line, cycles 1-64 return $FF because the sprite
+   evaluation unit is clearing secondary OAM. Outside that window the read
+   returns `oam_data[oam_addr]`. This is an approximation: hardware returns
+   the byte the evaluation unit is examining, which needs the per-cycle
+   sprite evaluation from issue 11.
+3. **`$2004` writes during rendering:** the data is ignored but OAMADDR still
+   performs the glitchy increment (bits 2-7 advance by one sprite, bits 0-1
+   unchanged). Outside rendering the write stores and increments by one.
+4. **`$2003` writes** set OAMADDR; the rendering-time corruption is out of
+   scope.
+
+Covered by five unit tests in the PPU tests module (`oam_*`).
+
+### Results
+
+- oam_stress: **Passed** (un-ignored in `tests/blargg.rs`, about 7 s in debug)
+- oam_read: still passes
+- Full suite and nestest: no regressions (35 blargg pass, 41 ignored)
+
+### Remaining Limitation
+
+Known Limitations item 3 (batched sprite evaluation) still applies. Until it
+is replaced, `$2004` reads between cycles 65 and 340 of a rendering line do
+not track the evaluation pointer.

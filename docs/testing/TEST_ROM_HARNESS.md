@@ -137,11 +137,11 @@ arms, so the unimplemented-opcode fallback was removed.
 | apu_test (8 + 1) | 5 | 4 | 2, 3, 4, 7, 8 pass since the IRQ line landed (Phase 3); 1 #4, 5 #3, 6 #2 remain; combined fails in test 1 |
 | apu_reset (6) | 1 | 5 | 4015_cleared #2, 4017_timing #3, 4017_written #2, len_ctrs_enabled #3, works_immediately #2; irq_flag_cleared passes |
 | oam_read | 1 | 0 | |
-| oam_stress | 0 | 1 | every 4th OAM byte reads back wrong |
+| oam_stress | 1 | 0 | passes since attribute bits 2-4 are masked (issue 14) |
 | mmc3_test_2 (6) | 4 | 2 | 4 needs cycle-exact sprite fetch positions (Phase 5); 6 is the alternate revision, exclusive with 5 |
-| **Total blargg** | **34** | **42** | |
+| **Total blargg** | **35** | **41** | |
 
-Combined with nestest: 20 tests pass, 62 are ignored.
+Combined with nestest: 42 tests pass, 41 are ignored.
 
 ### Expected progression
 
@@ -150,7 +150,7 @@ Combined with nestest: 20 tests pass, 62 are ignored.
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
 | Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, apu_reset (landed: apu_test 2/3/4/7/8 and mmc3_test_2 1/2/3/5 pass) |
 | Phase 4 (bus-tick timing) | landed: ppu_vbl_nmi 01/03 and sprite_hit 11 now pass |
-| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 4, ppu_vbl_nmi 02/04-10, apu_test 1/5/6 |
+| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, mmc3_test_2 4, ppu_vbl_nmi 02/04-10, apu_test 1/5/6 (landed: oam_stress via issue 14) |
 | Interrupt sampling (follow-up issue) | cpu_interrupts_v2 |
 
 ## Debug API reference (`src/system.rs`)
