@@ -2,6 +2,40 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.7.0] - 2026-09-05
+
+Accuracy wave 4. Closes issues 11 and 18. Test ROM status: 75 of 76 blargg
+suites pass (was 49 at 0.6.0); the one remaining is the alternate MMC3
+revision test, which is exclusive with the revision we implement.
+
+### Added
+- Per-dot sprite evaluation over dots 65-256 with the hardware overflow scan
+  bug, per-dot sprite fetches over 257-320 with garbage nametable fetches and
+  dummy tile FF slots, exact sprite 0 hit rules (issue 11). All sprite_hit,
+  sprite_overflow and mmc3_test_2 timing tests pass. See
+  docs/debugging/PPU_SPRITE_PIPELINE.md.
+- APU frame sequencer on the nesdev cycle schedule with the three-cycle IRQ
+  flag window and 29830-cycle period, shared length counter with enable,
+  halt and reload ordering, exact power-up and reset state (issue 18). All
+  apu_test, apu_reset and cpu_interrupts_v2 tests pass. See
+  docs/debugging/APU_FRAME_COUNTER.md.
+
+### Fixed
+- Background was drawn 8 pixels to the right of its nametable because the
+  coarse X increment was skipped at dots 328 and 336. Every game moves 8
+  pixels left; SMB now shows its game-select screen and Zelda draws the
+  Link icons and heart cursor on the select screen.
+- The PPU address bus was driven one dot late, so the MMC3 counter clocked
+  at dots 261 and 325 instead of 260 and 324. The A12 low filter is 10 dots.
+- Sprites at X 249 and above were dropped by a u8 wrap.
+- Triangle linear counter reload flag never cleared.
+
+### Known issues
+- APU sweep units are not clocked, so pitch bends do not occur (issue 21).
+- Tetris title screen is garbled (issue 22).
+
+---
+
 ## [0.6.0] - 2026-09-05
 
 Closes issue 12. Test ROM status: 49 of 76 blargg suites pass (was 40).
