@@ -25,6 +25,7 @@ Contains implementation plans and roadmaps:
 Contains testing guides and documentation:
 - `DEBUGGING_GUIDE.md` - Guide for debugging the emulator
 - `TESTING_GUIDE.md` - Guide for testing the emulator
+- `COMPATIBILITY_SWEEP.md` - Scripted gameplay sweep over the commercial ROMs with per-game verdicts (tests/game_sweep.rs)
 - `PPU_RENDERING_DEBUG.md` - PPU rendering debugging documentation
 - `test_ppu_complete.md` - Complete PPU test documentation
 - `test_start.md` - Initial test documentation
