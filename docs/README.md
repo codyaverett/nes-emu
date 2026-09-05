@@ -10,6 +10,8 @@ Contains debugging session notes and references:
 - `DEBUGGING_SESSION_2025-01-15.md` - Detailed debugging session notes
 - `DEBUG_REFERENCE.md` - Reference guide for debugging the emulator
 - `INTERRUPT_LINE.md` - CPU NMI edge / IRQ level polling and APU frame/DMC IRQ sources (#3)
+- `MAPPER_TRAIT_REFACTOR.md` - Mapper trait, one file per mapper, PPU CHR routing (#2)
+- `BUS_TICK_TIMING.md` - PPU and APU advance inside each CPU bus access, DMA as real cycles (#4)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:

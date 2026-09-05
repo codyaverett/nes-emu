@@ -26,9 +26,19 @@ pub struct System {
     pub cartridge: Option<Cartridge>,
     /// Stand-in mapper handed to the PPU while no cartridge is loaded.
     null_mapper: NullMapper,
-    cycles: u64,
-    oam_dma_cycles: u16,
+    /// Bus cycles ticked so far in the instruction being executed. Reset at
+    /// the start of `cpu_step` and used to pad an instruction out to its
+    /// documented cycle count (see `tick`).
+    instr_cycles: u16,
+    /// True while an OAM DMA ran inside the current instruction, which makes
+    /// the ticked count legitimately exceed the opcode's declared count.
+    dma_in_instr: bool,
     audio_sample_counter: f64,
+    /// Samples produced by `tick` during the current frame while
+    /// `audio_capture` is set; drained into the caller's buffer once per
+    /// frame so the per-cycle path never takes a mutex.
+    audio_out: Vec<f32>,
+    audio_capture: bool,
     /// Total CPU cycles executed since power-on or the last
     /// `set_total_cpu_cycles` call. Unlike `cycles` (a per-frame budget)
     /// this never resets; it feeds the nestest-style trace CYC column.
@@ -64,9 +74,11 @@ impl System {
             controller2: Controller::new(),
             cartridge: None,
             null_mapper: NullMapper,
-            cycles: 0,
-            oam_dma_cycles: 0,
+            instr_cycles: 0,
+            dma_in_instr: false,
             audio_sample_counter: 0.0,
+            audio_out: Vec::new(),
+            audio_capture: false,
             total_cycles: 0,
             nmi_pending: false,
             mapper_irq: false,
@@ -85,8 +97,16 @@ impl System {
         self.apu.reset();
         self.controller1.reset();
         self.controller2.reset();
+        self.instr_cycles = 0;
+        self.dma_in_instr = false;
 
+        // The reset sequence takes 7 cycles on hardware (nestest's log starts
+        // at CYC:7, PPU dot 21). Two of them are the vector fetch.
+        self.total_cycles = 0;
         self.cpu_pc = self.read_word(0xFFFC);
+        for _ in 0..5 {
+            self.tick();
+        }
         log::info!("Reset CPU, PC set to: 0x{:04X}", self.cpu_pc);
 
         // Log first few bytes at reset vector for debugging
@@ -118,7 +138,31 @@ impl System {
         (&mut self.ppu, mapper)
     }
 
+    /// Advance the rest of the machine by one CPU cycle: three PPU dots, one
+    /// APU step, the cycle counters and audio sampling. Every bus access
+    /// calls this first, so PPU and APU registers are observed at the cycle
+    /// the access really happens rather than after the instruction.
+    fn tick(&mut self) {
+        self.total_cycles += 1;
+        self.instr_cycles += 1;
+        for _ in 0..3 {
+            self.ppu_step();
+        }
+        self.apu.step();
+
+        if self.audio_capture {
+            const CYCLES_PER_SAMPLE: f64 = 1_789_773.0 / 44_100.0;
+            self.audio_sample_counter += 1.0;
+            if self.audio_sample_counter >= CYCLES_PER_SAMPLE {
+                self.audio_sample_counter -= CYCLES_PER_SAMPLE;
+                let sample = self.apu.get_output();
+                self.audio_out.push(sample);
+            }
+        }
+    }
+
     fn read_byte(&mut self, addr: u16) -> u8 {
+        self.tick();
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize],
             0x2000..=0x3FFF => {
@@ -144,6 +188,7 @@ impl System {
     }
 
     fn write_byte(&mut self, addr: u16, value: u8) {
+        self.tick();
         match addr {
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize] = value,
             0x2000..=0x3FFF => {
@@ -152,17 +197,20 @@ impl System {
             }
             0x4000..=0x4013 | 0x4015 => self.apu.write_register(addr, value),
             0x4014 => {
-                // OAM DMA - Direct Memory Access to PPU OAM
+                // OAM DMA. The CPU is halted while the DMA unit performs 256
+                // read/write pairs through the bus, each pair two cycles, plus
+                // one dummy cycle, plus one more alignment cycle when the DMA
+                // starts on an odd CPU cycle. Every access ticks, so the PPU
+                // and APU keep running underneath, as on hardware.
+                self.dma_in_instr = true;
                 let page = (value as u16) << 8;
-
-                // DMA takes 513 or 514 cycles (513 on odd CPU cycles, 514 on even)
-                // For now we'll use 513 cycles
-                self.oam_dma_cycles = 513;
-
-                // Copy 256 bytes from CPU memory to OAM
-                for i in 0..256 {
+                self.tick();
+                if self.total_cycles % 2 == 1 {
+                    self.tick();
+                }
+                for i in 0..256u16 {
                     let data = self.read_byte(page | i);
-                    self.ppu.oam_data[(self.ppu.oam_addr as usize + i as usize) & 0xFF] = data;
+                    self.write_byte(0x2004, data);
                 }
             }
             0x4016 => {
@@ -194,98 +242,69 @@ impl System {
         &mut self,
         audio_buffer: Option<&Arc<Mutex<VecDeque<f32>>>>,
     ) -> bool {
-        let target_cycles = 29780;
         let start_frame = self.ppu.frame;
+        self.audio_capture = audio_buffer.is_some();
 
-        // For audio sampling - use persistent counter
-        let cpu_clock_rate = 1789773.0;
-        let audio_sample_rate = 44100.0;
-        let cycles_per_sample = cpu_clock_rate / audio_sample_rate;
-
-        while self.cycles < target_cycles {
-            // CPU runs at 1/3 the speed of PPU
-            let cpu_cycles = self.cpu_step();
-            self.total_cycles += cpu_cycles as u64;
-
-            // PPU runs 3 times per CPU cycle
-            for _ in 0..(cpu_cycles * 3) {
-                self.ppu_step();
-                if self.ppu.frame != start_frame {
-                    // Frame completed
-                    self.cycles = 0;
-                    return true;
-                }
-            }
-
-            // Interrupts (NMI edge, IRQ level) are polled inside `cpu_step`
-            // before each opcode fetch; see `poll_interrupts`.
-
-            // The APU runs at the CPU clock: one step per CPU cycle so the
-            // frame sequencer (and therefore the frame IRQ) runs at ~240 Hz
-            // rather than once per 7457 instructions.
-            for _ in 0..cpu_cycles {
-                self.apu.step();
-            }
-
-            // DMC memory reader: the APU asks for a byte, the bus fetches it.
-            // The 4-cycle CPU stall the DMA causes is not modelled yet.
-            if let Some(addr) = self.apu.dmc_fetch_address() {
-                let byte = self.read_byte(addr);
-                self.apu.dmc_supply_sample(byte);
-            }
-
-            // Generate audio samples if buffer is provided
-            if let Some(buffer) = audio_buffer {
-                self.audio_sample_counter += cpu_cycles as f64;
-
-                // Generate audio samples when we have enough cycles accumulated
-                // The hard limit at buffer capacity prevents overflow
-                while self.audio_sample_counter >= cycles_per_sample {
-                    self.audio_sample_counter -= cycles_per_sample;
-                    let sample = self.apu.get_output();
-
-                    let mut audio_buf = buffer.lock().unwrap();
-                    if audio_buf.len() < 8192 {
-                        // Hard limit to prevent overflow
-                        audio_buf.push_back(sample);
-                    }
-
-                    // Safety check: prevent infinite loops if counter doesn't decrease properly
-                    if self.audio_sample_counter < 0.0 {
-                        self.audio_sample_counter = 0.0;
-                        break;
-                    }
-                }
-            }
-
-            self.cycles += cpu_cycles as u64;
+        // The PPU frame counter advances inside `tick`, so a frame ends at
+        // the end of whichever instruction crosses the boundary.
+        while self.ppu.frame == start_frame {
+            self.cpu_step();
         }
 
-        self.cycles -= target_cycles;
-        self.ppu.frame != start_frame
+        self.audio_capture = false;
+        if let Some(buffer) = audio_buffer {
+            let mut audio_buf = buffer.lock().unwrap();
+            for sample in self.audio_out.drain(..) {
+                if audio_buf.len() < 8192 {
+                    // Hard limit to prevent overflow
+                    audio_buf.push_back(sample);
+                }
+            }
+        } else {
+            self.audio_out.clear();
+        }
+        true
     }
 
-    fn cpu_step(&mut self) -> u8 {
-        // Handle OAM DMA cycles
-        if self.oam_dma_cycles > 0 {
-            let cycles = self.oam_dma_cycles.min(4) as u8;
-            self.oam_dma_cycles -= cycles as u16;
-            return cycles;
+    /// Execute one instruction (or one interrupt sequence) and return the
+    /// number of CPU cycles it took. The PPU and APU are advanced from
+    /// inside every bus access (see `tick`); instructions whose documented
+    /// cycle count exceeds their bus accesses are padded at the end so the
+    /// totals match hardware, and OAM DMA runs inline in the `$4014` write.
+    fn cpu_step(&mut self) -> u16 {
+        self.instr_cycles = 0;
+        self.dma_in_instr = false;
+
+        // Interrupt polling happens at the boundary between the previous
+        // instruction and the next opcode fetch. Every cycle of the previous
+        // instruction has already been ticked, so the PPU NMI latch and the
+        // APU/mapper IRQ levels seen here are the ones at that boundary.
+        let declared = match self.poll_interrupts() {
+            Some(cycles) => cycles as u16,
+            None => self.execute_opcode() as u16,
+        };
+
+        // DMC memory reader: the APU asks for a byte at the end of the
+        // instruction. The 4-cycle CPU stall is not modelled, so the fetch
+        // deliberately bypasses the ticking bus.
+        if let Some(addr) = self.apu.dmc_fetch_address() {
+            let byte = self.peek(addr);
+            self.apu.dmc_supply_sample(byte);
         }
 
-        // Interrupt polling happens here, at the boundary between the previous
-        // instruction and the next opcode fetch. The run loop ticks the PPU
-        // and APU after `cpu_step` returns, so "end of instruction N" is only
-        // observable at the start of `cpu_step` N+1; polling at the bottom of
-        // this function would see pre-tick state and land every interrupt one
-        // instruction late. Placing it after the OAM DMA early-return also
-        // means interrupts wait out a DMA stall. When Phase 4 moves the
-        // PPU/APU ticks inside the instruction, this spot still sees fully
-        // ticked state, so it survives the bus-tick refactor.
-        if let Some(cycles) = self.poll_interrupts() {
-            return cycles;
+        debug_assert!(
+            self.dma_in_instr || self.instr_cycles <= declared,
+            "instruction performed {} bus accesses but declares {} cycles",
+            self.instr_cycles,
+            declared
+        );
+        while self.instr_cycles < declared {
+            self.tick();
         }
+        self.instr_cycles
+    }
 
+    fn execute_opcode(&mut self) -> u8 {
         let opcode = self.read_byte(self.cpu_pc);
         let old_pc = self.cpu_pc;
         self.cpu_pc = self.cpu_pc.wrapping_add(1);
@@ -2831,53 +2850,13 @@ impl System {
         self.total_cycles = cycles;
     }
 
-    /// True while an OAM DMA started by a $4014 write is still stalling
-    /// the CPU.
-    pub fn oam_dma_pending(&self) -> bool {
-        self.oam_dma_cycles > 0
-    }
-
-    /// Execute exactly one CPU instruction plus the PPU and APU catch-up
-    /// that `run_frame` would perform for it, and return the CPU cycles
-    /// consumed.
-    ///
-    /// A pending OAM DMA stall (left over from a previous step or frame) is
-    /// drained first, then one instruction runs, then any stall that
-    /// instruction itself started (a `$4014` write) is drained too. All of
-    /// those cycles are included in the return value. NMI and IRQ are polled
-    /// inside `cpu_step` exactly as in `run_frame`, so instruction-stepped
-    /// code still sees vblank NMIs and APU/mapper IRQs.
+    /// Execute exactly one CPU instruction (or interrupt sequence) and
+    /// return the CPU cycles consumed. The PPU and APU advance inside the
+    /// instruction's bus accesses, an OAM DMA started by a `$4014` write runs
+    /// to completion inside the instruction, and NMI/IRQ are polled at the
+    /// instruction boundary, exactly as in `run_frame`.
     pub fn step_instruction(&mut self) -> u32 {
-        let mut total: u32 = 0;
-        let mut instruction_done = false;
-        loop {
-            // cpu_step returns DMA stall chunks instead of fetching an
-            // opcode while oam_dma_cycles is non-zero.
-            let is_instruction = self.oam_dma_cycles == 0;
-            let cpu_cycles = self.cpu_step();
-            total += cpu_cycles as u32;
-            self.total_cycles += cpu_cycles as u64;
-
-            for _ in 0..(cpu_cycles as u32 * 3) {
-                self.ppu_step();
-            }
-
-            // Interrupts are polled inside `cpu_step` (see `poll_interrupts`).
-            // APU runs one step per CPU cycle, exactly as `run_frame` does.
-            for _ in 0..cpu_cycles {
-                self.apu.step();
-            }
-            if let Some(addr) = self.apu.dmc_fetch_address() {
-                let byte = self.read_byte(addr);
-                self.apu.dmc_supply_sample(byte);
-            }
-
-            instruction_done |= is_instruction;
-            if instruction_done && self.oam_dma_cycles == 0 {
-                break;
-            }
-        }
-        total
+        self.cpu_step() as u32
     }
 
     /// Length in bytes of the instruction at `addr`, derived from its

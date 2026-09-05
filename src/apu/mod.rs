@@ -378,6 +378,10 @@ pub struct Apu {
     /// `cycles` so a $4017 write can reset the sequencer without disturbing
     /// the channel timer parity.
     frame_divider: u32,
+    /// Countdown until a pending `$4017` write resets the sequencer. The
+    /// reset lands 3 CPU cycles after a write on an even (APU) cycle and 4
+    /// after a write on an odd cycle; 0 means nothing pending.
+    frame_reset_delay: u8,
     /// Frame interrupt flag: set on the last step of the 4-step sequence
     /// unless inhibited. Held until a $4015 read or a $4017 write with
     /// bit 6 (inhibit) set.
@@ -404,6 +408,7 @@ impl Apu {
             frame_counter: 0,
             frame_sequence: 0,
             frame_divider: FRAME_STEP_CYCLES,
+            frame_reset_delay: 0,
             frame_interrupt: false,
             frame_interrupt_inhibit: false,
             cycles: 0,
@@ -420,6 +425,7 @@ impl Apu {
         self.frame_counter = 0;
         self.frame_sequence = 0;
         self.frame_divider = FRAME_STEP_CYCLES;
+        self.frame_reset_delay = 0;
         self.frame_interrupt = false;
         self.frame_interrupt_inhibit = false;
         self.cycles = 0;
@@ -596,18 +602,10 @@ impl Apu {
                     self.frame_interrupt = false;
                 }
 
-                // Writing $4017 resets the frame sequencer. In 5-step mode
-                // the quarter- and half-frame units are clocked immediately.
-                // (Hardware applies the reset 3-4 CPU cycles after the write;
-                // that delay is not modelled yet.)
-                self.frame_sequence = 0;
-                self.frame_divider = FRAME_STEP_CYCLES;
-                if (value & 0x80) != 0 {
-                    self.clock_envelopes();
-                    self.clock_linear_counter();
-                    self.clock_length_counters();
-                    self.clock_sweeps();
-                }
+                // Writing $4017 resets the frame sequencer, but the reset
+                // lands 3 or 4 CPU cycles after the write depending on the
+                // write cycle's parity. See `apply_frame_reset`.
+                self.frame_reset_delay = if self.cycles.is_multiple_of(2) { 3 } else { 4 };
             }
 
             _ => {}
@@ -630,7 +628,27 @@ impl Apu {
             self.clock_frame_counter();
         }
 
+        if self.frame_reset_delay > 0 {
+            self.frame_reset_delay -= 1;
+            if self.frame_reset_delay == 0 {
+                self.apply_frame_reset();
+            }
+        }
+
         self.cycles += 1;
+    }
+
+    /// Delayed effect of a `$4017` write: restart the sequencer and, in
+    /// 5-step mode, clock the quarter- and half-frame units immediately.
+    fn apply_frame_reset(&mut self) {
+        self.frame_sequence = 0;
+        self.frame_divider = FRAME_STEP_CYCLES;
+        if (self.frame_counter & 0x80) != 0 {
+            self.clock_envelopes();
+            self.clock_linear_counter();
+            self.clock_length_counters();
+            self.clock_sweeps();
+        }
     }
 
     /// Level of the APU's contribution to the CPU IRQ line: the OR of the
@@ -774,10 +792,19 @@ mod tests {
         }
     }
 
+    /// Write `$4017` and step through the 3-4 cycle delay before the
+    /// sequencer reset lands, so the tests count from the reset itself.
+    fn write_4017(apu: &mut Apu, value: u8) {
+        apu.write_register(0x4017, value);
+        while apu.frame_reset_delay > 0 {
+            apu.step();
+        }
+    }
+
     #[test]
     fn frame_irq_set_on_last_step_of_4_step_mode() {
         let mut apu = Apu::new();
-        apu.write_register(0x4017, 0x00);
+        write_4017(&mut apu, 0x00);
         run(&mut apu, FRAME_STEP_CYCLES * 3);
         assert!(!apu.irq_pending(), "not before the fourth step");
         run(&mut apu, FRAME_STEP_CYCLES);
@@ -790,7 +817,7 @@ mod tests {
     #[test]
     fn frame_irq_held_until_acknowledged() {
         let mut apu = Apu::new();
-        apu.write_register(0x4017, 0x00);
+        write_4017(&mut apu, 0x00);
         run(&mut apu, FRAME_STEP_CYCLES * 4);
         assert!(apu.irq_pending());
         run(&mut apu, FRAME_STEP_CYCLES * 3);
@@ -800,21 +827,21 @@ mod tests {
     #[test]
     fn frame_irq_inhibited_and_cleared_by_4017_bit6() {
         let mut apu = Apu::new();
-        apu.write_register(0x4017, 0x40);
+        write_4017(&mut apu, 0x40);
         run(&mut apu, FRAME_STEP_CYCLES * 8);
         assert!(!apu.irq_pending(), "inhibit bit blocks the flag");
 
-        apu.write_register(0x4017, 0x00);
+        write_4017(&mut apu, 0x00);
         run(&mut apu, FRAME_STEP_CYCLES * 4);
         assert!(apu.irq_pending());
-        apu.write_register(0x4017, 0x40);
+        write_4017(&mut apu, 0x40);
         assert!(!apu.irq_pending(), "writing $4017 with inhibit clears it");
     }
 
     #[test]
     fn frame_irq_never_set_in_5_step_mode() {
         let mut apu = Apu::new();
-        apu.write_register(0x4017, 0x80);
+        write_4017(&mut apu, 0x80);
         run(&mut apu, FRAME_STEP_CYCLES * 10);
         assert!(!apu.irq_pending());
     }
@@ -822,10 +849,10 @@ mod tests {
     #[test]
     fn write_4017_resets_sequencer() {
         let mut apu = Apu::new();
-        apu.write_register(0x4017, 0x00);
+        write_4017(&mut apu, 0x00);
         run(&mut apu, FRAME_STEP_CYCLES * 3 + 100);
         // Reset: the 4th step is now four full periods away again.
-        apu.write_register(0x4017, 0x00);
+        write_4017(&mut apu, 0x00);
         run(&mut apu, FRAME_STEP_CYCLES * 4 - 1);
         assert!(!apu.irq_pending());
         run(&mut apu, 1);
@@ -838,7 +865,7 @@ mod tests {
         apu.write_register(0x4015, 0x01);
         apu.write_register(0x4003, 0x08); // length index 1 -> 254
         let before = apu.pulse1.length_counter;
-        apu.write_register(0x4017, 0x80);
+        write_4017(&mut apu, 0x80);
         assert_eq!(apu.pulse1.length_counter, before - 1);
     }
 

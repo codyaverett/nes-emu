@@ -26,6 +26,8 @@ struct TraceFields {
     p: u8,
     sp: u8,
     cyc: u64,
+    /// PPU position `(scanline, dot)` from the `PPU:` column.
+    ppu: (u16, u16),
 }
 
 fn field_after<'a>(line: &'a str, tag: &str) -> &'a str {
@@ -48,7 +50,19 @@ fn parse_trace(line: &str) -> TraceFields {
         p: hex8("P:"),
         sp: hex8("SP:"),
         cyc: field_after(line, "CYC:").parse().unwrap(),
+        ppu: parse_ppu(line),
     }
+}
+
+/// The `PPU:` column is `PPU:sss,ddd` with space padding inside the
+/// numbers, so it cannot go through `field_after`.
+fn parse_ppu(line: &str) -> (u16, u16) {
+    let start = line.find("PPU:").expect("trace line missing PPU:") + 4;
+    let end = line[start..].find("CYC:").expect("trace line missing CYC:") + start;
+    let mut parts = line[start..end].split(',');
+    let scanline = parts.next().unwrap().trim().parse().unwrap();
+    let dot = parts.next().unwrap().trim().parse().unwrap();
+    (scanline, dot)
 }
 
 fn load_expected_log() -> Vec<String> {
@@ -82,6 +96,8 @@ struct Comparison {
     first_reg_mismatch: Option<(usize, String, String)>,
     /// Same for the first CYC-column mismatch.
     first_cyc_mismatch: Option<(usize, String, String)>,
+    /// Same for the first PPU-column (scanline, dot) mismatch.
+    first_ppu_mismatch: Option<(usize, String, String)>,
     lines_compared: usize,
 }
 
@@ -94,6 +110,7 @@ fn compare_against_log(max_lines: usize) -> Comparison {
     let mut cmp = Comparison {
         first_reg_mismatch: None,
         first_cyc_mismatch: None,
+        first_ppu_mismatch: None,
         lines_compared: 0,
     };
 
@@ -114,7 +131,10 @@ fn compare_against_log(max_lines: usize) -> Comparison {
             break;
         }
         if exp.cyc != act.cyc && cmp.first_cyc_mismatch.is_none() {
-            cmp.first_cyc_mismatch = Some((idx + 1, exp_line.clone(), actual_line));
+            cmp.first_cyc_mismatch = Some((idx + 1, exp_line.clone(), actual_line.clone()));
+        }
+        if exp.ppu != act.ppu && cmp.first_ppu_mismatch.is_none() {
+            cmp.first_ppu_mismatch = Some((idx + 1, exp_line.clone(), actual_line));
         }
         system.step_instruction();
     }
@@ -155,6 +175,17 @@ fn nestest_registers_match_log_prefix() {
         panic!("{}", describe("register", m));
     }
     assert_eq!(cmp.lines_compared, KNOWN_GOOD_PREFIX);
+}
+
+#[test]
+fn nestest_ppu_position_matches_log() {
+    // The PPU column proves the PPU advances inside each instruction at the
+    // right cycle, not just that the CPU cycle total is right.
+    let cmp = compare_against_log(usize::MAX);
+    if let Some(m) = &cmp.first_ppu_mismatch {
+        panic!("{}", describe("PPU position", m));
+    }
+    assert_eq!(cmp.lines_compared, load_expected_log().len());
 }
 
 #[test]

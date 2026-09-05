@@ -109,6 +109,7 @@ compiled and runnable with `--include-ignored`.
 | `nestest_cycles_match_log_prefix` | pass | Lines 1-3639 also match on CYC |
 | `nestest_registers_match_log` | pass | All 8991 lines match on PC/A/X/Y/P/SP |
 | `nestest_cycles_match_log` | pass | All 8991 lines match on CYC |
+| `nestest_ppu_position_matches_log` | pass | All 8991 lines match on the PPU scanline/dot column |
 | `nestest_result_bytes_are_clear` | pass | `$02` and `$03` are both zero at the end of the run |
 
 ### CPU bugs found by the harness (fixed, issue 9)
@@ -129,16 +130,16 @@ arms, so the unimplemented-opcode fallback was removed.
 | instr_test-v5 (16 singles + 2 combined) | 18 | 0 | |
 | cpu_timing_test6 | 1 | 0 | |
 | cpu_interrupts_v2 (5 + 1) | 0 | 6 | no IRQ line: 1 fails #3 (APU IRQ), 2/3/5 hang, 4 wrong DMA offsets, combined fails in test 1 |
-| ppu_vbl_nmi (10 + 1) | 0 | 11 | 01 #8 VBL too long with BG off; 04 #11 NMI after next instruction; 02/03/05-10 hang in sync loop; combined fails in test 1 |
+| ppu_vbl_nmi (10 + 1) | 2 | 9 | 01 and 03 pass since bus-tick timing (Phase 4); 04 #11 NMI after next instruction; 02/05-10 need exact vblank dots (Phase 5) |
 | ppu_open_bus | 0 | 1 | #2 write should set decay value |
-| sprite_hit_tests_2005.10.05 (11) | 0 | 11 | 01 #7, 02 #2, 03 #2, 04 #2, 05 #4, 06 #3, 07 #6, 08 #3; 09/10/11 hang |
+| sprite_hit_tests_2005.10.05 (11) | 1 | 10 | 11 passes since Phase 4; 01 #7, 02 #2, 03 #2, 04 #2, 05 #4, 06 #3, 07 #6, 08 #3; 09/10 hang |
 | sprite_overflow_tests (5) | 1 | 4 | 1 #7, 2 #9, 4 #7, 3 hangs; 5.Emulator passes |
 | apu_test (8 + 1) | 5 | 4 | 2, 3, 4, 7, 8 pass since the IRQ line landed (Phase 3); 1 #4, 5 #3, 6 #2 remain; combined fails in test 1 |
 | apu_reset (6) | 1 | 5 | 4015_cleared #2, 4017_timing #3, 4017_written #2, len_ctrs_enabled #3, works_immediately #2; irq_flag_cleared passes |
 | oam_read | 1 | 0 | |
 | oam_stress | 0 | 1 | every 4th OAM byte reads back wrong |
 | mmc3_test_2 (6) | 4 | 2 | 4 needs cycle-exact sprite fetch positions (Phase 5); 6 is the alternate revision, exclusive with 5 |
-| **Total blargg** | **31** | **45** | |
+| **Total blargg** | **34** | **42** | |
 
 Combined with nestest: 20 tests pass, 62 are ignored.
 
@@ -148,8 +149,9 @@ Combined with nestest: 20 tests pass, 62 are ignored.
 |-------|---------------------------------|
 | CPU fix for `$B4` (small, can ride with any phase) | instr_test-v5 05/official_only/all_instrs, nestest full register compare, likely `cpu_timing_test6` moves to a timing failure |
 | Phase 3 (IRQ line, NMI edge) | cpu_interrupts_v2, apu_reset (landed: apu_test 2/3/4/7/8 and mmc3_test_2 1/2/3/5 pass) |
-| Phase 4 (bus-tick timing) | ppu_vbl_nmi, apu_test 1/5/6 |
-| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 4 |
+| Phase 4 (bus-tick timing) | landed: ppu_vbl_nmi 01/03 and sprite_hit 11 now pass |
+| Phase 5 (PPU cycle detail) | sprite_hit_tests, sprite_overflow_tests, ppu_open_bus, oam_stress, mmc3_test_2 4, ppu_vbl_nmi 02/04-10, apu_test 1/5/6 |
+| Interrupt sampling (follow-up issue) | cpu_interrupts_v2 |
 
 ## Debug API reference (`src/system.rs`)
 

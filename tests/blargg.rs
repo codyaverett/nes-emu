@@ -221,8 +221,7 @@ blargg_test!(
 blargg_test!(
     ppu_vbl_nmi_01_vbl_basics,
     "ppu_vbl_nmi/rom_singles/01-vbl_basics.nes",
-    SHORT,
-    ignore = "#8 VBL period is too long with BG off; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_02_vbl_set_time,
@@ -233,8 +232,7 @@ blargg_test!(
 blargg_test!(
     ppu_vbl_nmi_03_vbl_clear_time,
     "ppu_vbl_nmi/rom_singles/03-vbl_clear_time.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4"
+    SHORT
 );
 blargg_test!(
     ppu_vbl_nmi_04_nmi_control,
@@ -361,8 +359,7 @@ legacy_test!(
 legacy_test!(
     sprite_hit_11_edge_timing,
     "sprite_hit_tests_2005.10.05/11.edge_timing.nes",
-    SHORT,
-    ignore = "hangs in PPU sync loop; Phase 4/5"
+    SHORT
 );
 
 // ---------------------------------------------------------------------
@@ -526,11 +523,7 @@ blargg_test!(
     SHORT,
     ignore = "never reports: needs cycle-exact sprite fetch positions in 257-320; Phase 5"
 );
-blargg_test!(
-    mmc3_5_mmc3,
-    "mmc3_test_2/rom_singles/5-MMC3.nes",
-    SHORT
-);
+blargg_test!(mmc3_5_mmc3, "mmc3_test_2/rom_singles/5-MMC3.nes", SHORT);
 blargg_test!(
     mmc3_6_mmc3_alt,
     "mmc3_test_2/rom_singles/6-MMC3_alt.nes",

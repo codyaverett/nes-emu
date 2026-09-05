@@ -2,6 +2,44 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.4.0] - 2026-09-05
+
+Accuracy wave 2. Closes issues 3, 4 and 9. Test ROM status: 34 of 76 blargg
+suites and all 7 nestest checks pass (was 22 and 3 at 0.3.0).
+
+### Added
+- Bus-tick timing (issue 4): the PPU and APU advance inside every CPU bus
+  access instead of after each instruction. OAM DMA runs as 512 real bus
+  transfers with the odd-cycle alignment stall. The frame loop is driven by
+  the PPU frame counter. See docs/debugging/BUS_TICK_TIMING.md.
+- MMC3 IRQ counter clocked from PPU A12 rising edges through a new
+  Mapper::ppu_a12_rise hook, with the hardware low-time filter; sprite
+  fetches run on every rendered line including dummy fetches (issue 3).
+- nestest harness compares the PPU scanline/dot column as well as CYC.
+- Commercial ROM framebuffer fingerprint test (tests/game_frames.rs, ignored
+  by default) for manual before/after regression checks.
+- Reset takes 7 cycles like hardware.
+
+### Fixed
+- Opcode B4 (LDY zp,X) was unimplemented (issue 9).
+- Page-crossing cycle on taken branches, unofficial NOP abs,X, LAX abs,Y and
+  LAX (ind),Y; SHY/SHX page-crossing address quirk. nestest now matches all
+  8991 lines on registers, cycles and PPU position.
+- APU 4017 write applies the sequencer reset 3 or 4 cycles later depending
+  on cycle parity, as on hardware.
+
+### Removed
+- The unimplemented-opcode fallback in the CPU; every opcode has an arm.
+- The fixed 29780-cycle frame budget and the chunked OAM DMA stall.
+
+### Known issues
+- cpu_interrupts_v2 needs interrupt sampling on the penultimate cycle of
+  each instruction (follow-up issue).
+- Contra and SMB3 framebuffer fingerprints changed with the timing rewrite
+  and need a visual check.
+
+---
+
 ## [0.3.0] - 2026-09-04
 
 Accuracy wave 1. Plan: docs/plans/ACCURACY_ROADMAP.md. Closes issues 1 and 2,
