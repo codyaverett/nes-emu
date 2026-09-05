@@ -72,7 +72,32 @@ impl Cartridge {
         let battery_backed = (flags_6 & 0x02) != 0;
         let trainer_present = (flags_6 & 0x04) != 0;
 
-        let mapper_id = (flags_7 & 0xF0) | ((flags_6 & 0xF0) >> 4);
+        // Archaic iNES headers (pre-0.7 tools, and dumps that carry a
+        // "DiskDude" style signature in bytes 7-15) only define byte 6.
+        // Byte 7 then holds ASCII, and its upper nibble would corrupt the
+        // mapper number: roms/Tetris.nes reads 0x44 there and became mapper
+        // 65 instead of 1. The standard heuristic (nesdev "iNES" page): if
+        // bytes 12-15 are nonzero, or byte 7 bits 2-3 read 01, trust only
+        // the low mapper nibble from byte 6. NES 2.0 (byte 7 bits 2-3 = 10)
+        // is checked first: bytes 12-15 are real fields there and byte 7's
+        // mapper nibble is valid, so it must not trip the heuristic.
+        let nes2 = (flags_7 & 0x0C) == 0x08;
+        let archaic = !nes2 && (data[12..16].iter().any(|&b| b != 0) || (flags_7 & 0x0C) == 0x04);
+        let mapper_id = if archaic {
+            let full = (flags_7 & 0xF0) | ((flags_6 & 0xF0) >> 4);
+            let low = (flags_6 & 0xF0) >> 4;
+            if full != low {
+                log::warn!(
+                    "Archaic iNES header (bytes 7-15 = {:02x?}): ignoring byte 7, mapper {} not {}",
+                    &data[7..16],
+                    low,
+                    full
+                );
+            }
+            low
+        } else {
+            (flags_7 & 0xF0) | ((flags_6 & 0xF0) >> 4)
+        };
 
         let header_size = 16;
         let trainer_size = if trainer_present { 512 } else { 0 };
@@ -174,6 +199,46 @@ mod tests {
         let mut mapper = cart.mapper;
         assert_eq!(mapper.cpu_read(0x8000), 0);
         assert_eq!(mapper.cpu_read(0xC000), 1);
+    }
+
+    #[test]
+    fn archaic_header_signature_does_not_corrupt_mapper_number() {
+        // Tetris (MMC1, vertical mirroring) as dumped with a DiskDude
+        // signature in bytes 7-15: byte 7 = 0x44 used to yield mapper 65.
+        let mut data = ines(1, 8, 16, 0x01);
+        data[7..16].copy_from_slice(b"DiskDude!");
+        let cart = Cartridge::load_from_bytes(&data).unwrap();
+        assert_eq!(cart.mapper_id, 1);
+        assert_eq!(cart.header_mirroring, Mirroring::Vertical);
+        // MMC1 power-on: PRG mode 3, last 16 KB bank fixed at $C000, and a
+        // serial CHR bank load reaches the PPU (H3001 would not respond).
+        let mut mapper = cart.mapper;
+        assert_eq!(mapper.cpu_read(0xC000), 7);
+        for i in 0..5 {
+            mapper.cpu_write(0xA000, (2u8 >> i) & 1); // 8 KB mode: banks 2,3
+        }
+        assert_eq!(mapper.ppu_read(0x0000), 0x81);
+    }
+
+    #[test]
+    fn archaic_flag_bits_alone_ignore_byte_7() {
+        // Byte 7 bits 2-3 = 01 marks an archaic header even with clean padding.
+        let mut data = ines(1, 2, 1, 0x00);
+        data[7] = 0x44;
+        assert_eq!(Cartridge::load_from_bytes(&data).unwrap().mapper_id, 1);
+        // A clean header still honours the upper nibble.
+        data[7] = 0x40;
+        assert_eq!(Cartridge::load_from_bytes(&data).unwrap().mapper_id, 65);
+    }
+
+    #[test]
+    fn nes2_header_keeps_upper_mapper_nibble_despite_nonzero_tail() {
+        // NES 2.0: byte 7 bits 2-3 = 10 and bytes 12-15 are real fields
+        // (byte 15 = 1 is the standard-controller expansion device).
+        let mut data = ines(65, 2, 1, 0x00);
+        data[7] |= 0x08;
+        data[15] = 0x01;
+        assert_eq!(Cartridge::load_from_bytes(&data).unwrap().mapper_id, 65);
     }
 
     #[test]

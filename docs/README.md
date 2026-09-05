@@ -15,6 +15,7 @@ Contains debugging session notes and references:
 - `VBLANK_NMI_TIMING.md` - NMI line withdrawal, 2002 suppression window, sample dot, odd-frame skip (#12)
 - `APU_FRAME_COUNTER.md` - frame sequencer schedule, three-cycle IRQ flag window, length counter enable/halt, power-up and reset state (#18)
 - `PPU_SPRITE_PIPELINE.md` - Per-dot sprite evaluation and fetch, overflow scan bug, sprite 0 hit rules, 8-pixel background shift fix, MMC3 A12 dot timing (#11)
+- `TETRIS_MMC1_FIX.md` - Tetris garbled tiles traced to an archaic DiskDude iNES header read as mapper 65; header sanitising in the cartridge loader (#22)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
