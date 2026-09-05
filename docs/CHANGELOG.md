@@ -2,6 +2,31 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.5.0] - 2026-09-05
+
+Accuracy wave 3. Closes issues 10, 13 and 14. Test ROM status: 40 of 76 blargg
+suites and all 7 nestest checks pass (was 34 at 0.4.0).
+
+### Added
+- Interrupts are sampled on the penultimate cycle of each instruction, with
+  the delayed I-flag effect of CLI, SEI and PLP, the taken-branch delay, and
+  NMI hijacking of BRK and IRQ sequences (issue 10). cpu_interrupts_v2 1, 2
+  and 4 and ppu_vbl_nmi 04 pass.
+- PPU open bus: a decaying I/O bus latch behind 2002, 2004 and 2007 reads
+  and the write-only registers (issue 13). ppu_open_bus passes. See
+  docs/debugging/PPU_OPEN_BUS.md.
+- OAM attribute bits 2-4 are masked, 2004 reads return FF during the
+  secondary OAM clear window, and 2004 writes during rendering are ignored
+  with the glitchy OAMADDR increment (issue 14). oam_stress passes.
+
+### Known issues
+- cpu_interrupts_v2 3 and 5 depend on exact vblank flag timing (issue 12)
+  and exact APU frame-flag timing.
+- Phase 5 PPU work still open: per-cycle sprite evaluation (issue 11) and
+  exact vblank/NMI dot timing (issue 12).
+
+---
+
 ## [0.4.0] - 2026-09-05
 
 Accuracy wave 2. Closes issues 3, 4 and 9. Test ROM status: 34 of 76 blargg
