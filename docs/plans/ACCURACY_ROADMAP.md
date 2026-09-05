@@ -3,7 +3,7 @@
 **Date:** 2026-09-04
 **Type:** Architecture Plan
 **Status:** Phases 1-4 complete (2026-09-05); Phase 5 open
-**Tracking:** GitHub issues #1 through #5, one per phase
+**Tracking:** GitHub issues #1 through #4 one per phase; Phase 5 is #11-#14; #10 is the interrupt-sampling follow-up
 
 ## Executive Summary
 
@@ -137,7 +137,7 @@ cycle.
 **Done when:** nestest passes fully including cycle column;
 `cpu_timing_test6`, `ppu_vbl_nmi`, and `apu_test` pass.
 
-### Phase 5: PPU cycle-level details (#5)
+### Phase 5: PPU cycle-level details (#5, split into #11 sprite eval, #12 vblank/NMI timing, #13 open bus, #14 OAM; A12 clocking landed with #3)
 
 **Goal:** Close the remaining PPU accuracy gaps.
 
