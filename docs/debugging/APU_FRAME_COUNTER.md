@@ -134,7 +134,73 @@ The old divider fired at 29828 from cycle 0 and reported 13 (too early).
 
 ## Still open
 
-- Sweep units are still not clocked (`clock_sweeps` is empty), so pitch
-  bends in games do not happen. Envelope and pitch behaviour in real games
-  needs a human listen; the tests only cover what the CPU can read back.
+- Envelope and pitch behaviour in real games needs a human listen; the
+  tests only cover what the CPU can read back and the emulator's own
+  channel state.
 - The DMC memory reader still bypasses the bus and does not stall the CPU.
+
+## Sweep units (issue #21)
+
+`Apu::clock_sweeps` was empty, so `$4001`/`$4005` were stored and never
+acted on and every pulse note played flat. Each `Pulse` now carries a
+sweep unit following nesdev "APU Sweep":
+
+- `$4001`/`$4005` write the enable flag (bit 7), divider period (bits 6-4),
+  negate flag (bit 3) and shift count (bits 2-0), and set the sweep's
+  reload flag. Nothing else changes on the write; the divider is only
+  reloaded on the next half-frame clock.
+- `Pulse::sweep_target` is `period + (period >> shift)` in add mode and
+  `period - (period >> shift)` in negate mode. Pulse 1's adder is one's
+  complement, so it subtracts one more than pulse 2 (`0x100` with shift 1
+  goes to `0x7F` on pulse 1 and `0x80` on pulse 2). A shift of 0 makes the
+  change equal to the whole period. The subtraction saturates at 0; the
+  addition is not clamped to 11 bits because an out-of-range target is
+  what the muting rule looks at.
+- `Pulse::clock_sweep` runs on every half-frame clock (both sequencer modes,
+  and the immediate clock when a 5-step `$4017` write lands). If the divider
+  is 0, the unit is enabled, the shift count is non-zero and the channel is
+  not muted, the period becomes the target. Then, if the divider is 0 or
+  the reload flag is set, the divider is reloaded from the register value
+  and the flag cleared; otherwise it decrements. The check uses the divider
+  value before the reload, so the first clock after a `$4001` write with the
+  divider already at 0 updates the period at once. `timer_counter` is not
+  touched; the new period takes effect when the timer next wraps.
+- `$4002`/`$4003` and `$4006`/`$4007` keep writing `timer_period` as
+  before, and that is the period the sweep reads and rewrites.
+
+### Muting rule
+
+`Pulse::sweep_muted` is true when the current period is below 8 or the
+target period is above `0x7FF`. It is checked continuously in the output
+path, not only on sweep clocks, and it ignores the enable flag and the
+shift count: a disabled sweep with a period of 7 is still silent, and a
+period of `0x700` with add mode and shift 1 (target `0xA80`) is silent even
+with bit 7 clear. Muting also stops the period from being updated, so a
+sweep-down ends with the period parked just below 8 rather than running to
+0. The old output path only checked `period < 8`.
+
+Sweep registers are not reset by `Apu::reset`; like the other channel
+registers they are state the reset line leaves alone.
+
+### Verification
+
+Unit tests in src/apu/mod.rs, clocking half-frames with 5-step `$4017`
+writes as the length counter tests do:
+
+- `sweep_target_period_both_negate_modes`: add and negate targets on both
+  channels, the pulse 1 extra decrement, shift 0 and saturation at 0.
+- `sweep_mutes_on_low_period_and_high_target`: output is 15 at period
+  `0x100`, 0 at period 7, 15 again at 8, 0 at `0x700` with an out-of-range
+  add target while the sweep is disabled, 15 once negate brings the target
+  back in range, and a muted channel's period does not change on a clock.
+- `sweep_down_sequence_on_half_frame_clocks`: `0x100` with negate and
+  shift 1 goes `0x7F, 0x3F, 0x1F, 0x0F, 0x07` on pulse 1 and
+  `0x80, 0x40, 0x20, 0x10` on pulse 2, then stops once muted.
+- `sweep_divider_reload`: with divider period 2 the period changes on
+  clocks 1 and 4, a mid-count `$4001` write reloads the divider on the next
+  clock without changing the period, and shift 0 never updates it.
+
+The blargg suites only read `$4015`, so they cannot see any of this; they
+stay green (apu_test 1-8, apu_reset, cpu_interrupts_v2, nestest). Pitch
+bends in a real game (Mega Man, Contra weapon sounds) still need a human
+listen.

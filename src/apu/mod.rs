@@ -104,7 +104,14 @@ pub struct Pulse {
     sweep_period: u8,
     sweep_negate: bool,
     sweep_shift: u8,
-    _sweep_counter: u8,
+    /// Sweep divider, counted down on each half-frame clock.
+    sweep_divider: u8,
+    /// Set by a `$4001`/`$4005` write; the divider reloads on the next
+    /// half-frame clock.
+    sweep_reload: bool,
+    /// Pulse 1's sweep adder uses one's complement, so its negated target
+    /// is one lower than pulse 2's.
+    sweep_ones_complement: bool,
     timer_period: u16,
     timer_counter: u16,
     length: LengthCounter,
@@ -112,7 +119,7 @@ pub struct Pulse {
 }
 
 impl Pulse {
-    fn new() -> Self {
+    fn new(sweep_ones_complement: bool) -> Self {
         Pulse {
             duty: 0,
             volume: 0,
@@ -126,7 +133,9 @@ impl Pulse {
             sweep_period: 0,
             sweep_negate: false,
             sweep_shift: 0,
-            _sweep_counter: 0,
+            sweep_divider: 0,
+            sweep_reload: false,
+            sweep_ones_complement,
             timer_period: 0,
             timer_counter: 0,
             length: LengthCounter::default(),
@@ -143,8 +152,51 @@ impl Pulse {
         }
     }
 
+    /// The period the sweep unit would set: the current period plus or
+    /// minus `period >> shift`. Pulse 1 subtracts one extra when negating
+    /// (one's complement adder). The result is not clamped to 11 bits; a
+    /// target above `0x7FF` mutes the channel instead.
+    fn sweep_target(&self) -> u16 {
+        let change = self.timer_period >> self.sweep_shift;
+        if self.sweep_negate {
+            let extra = u16::from(self.sweep_ones_complement);
+            self.timer_period
+                .saturating_sub(change)
+                .saturating_sub(extra)
+        } else {
+            self.timer_period + change
+        }
+    }
+
+    /// Sweep muting applies continuously, whatever the enable flag and
+    /// shift count: a current period below 8 or a target above `0x7FF`
+    /// silences the channel.
+    fn sweep_muted(&self) -> bool {
+        self.timer_period < 8 || self.sweep_target() > 0x7FF
+    }
+
+    /// Half-frame sweep clock. The period only changes when the divider is
+    /// already 0 and the unit is enabled with a non-zero shift and not
+    /// muting; the divider then reloads when it was 0 or a reload is
+    /// pending, and counts down otherwise.
+    fn clock_sweep(&mut self) {
+        if self.sweep_divider == 0
+            && self.sweep_enabled
+            && self.sweep_shift != 0
+            && !self.sweep_muted()
+        {
+            self.timer_period = self.sweep_target();
+        }
+        if self.sweep_divider == 0 || self.sweep_reload {
+            self.sweep_divider = self.sweep_period;
+            self.sweep_reload = false;
+        } else {
+            self.sweep_divider -= 1;
+        }
+    }
+
     fn _get_output(&self) -> u8 {
-        if !self.length.active() || self.timer_period < 8 {
+        if !self.length.active() || self.sweep_muted() {
             return 0;
         }
 
@@ -513,8 +565,8 @@ impl Default for Apu {
 impl Apu {
     pub fn new() -> Self {
         Apu {
-            pulse1: Pulse::new(),
-            pulse2: Pulse::new(),
+            pulse1: Pulse::new(true),
+            pulse2: Pulse::new(false),
             triangle: Triangle::new(),
             noise: Noise::new(),
             dmc: Dmc::new(),
@@ -608,6 +660,7 @@ impl Apu {
                 self.pulse1.sweep_period = (value >> 4) & 0x07;
                 self.pulse1.sweep_negate = (value & 0x08) != 0;
                 self.pulse1.sweep_shift = value & 0x07;
+                self.pulse1.sweep_reload = true;
             }
             0x4002 => {
                 self.pulse1.timer_period = (self.pulse1.timer_period & 0xFF00) | value as u16;
@@ -632,6 +685,7 @@ impl Apu {
                 self.pulse2.sweep_period = (value >> 4) & 0x07;
                 self.pulse2.sweep_negate = (value & 0x08) != 0;
                 self.pulse2.sweep_shift = value & 0x07;
+                self.pulse2.sweep_reload = true;
             }
             0x4006 => {
                 self.pulse2.timer_period = (self.pulse2.timer_period & 0xFF00) | value as u16;
@@ -866,7 +920,10 @@ impl Apu {
         self.clock_sweeps();
     }
 
-    fn clock_sweeps(&mut self) {}
+    fn clock_sweeps(&mut self) {
+        self.pulse1.clock_sweep();
+        self.pulse2.clock_sweep();
+    }
 
     pub fn get_output(&self) -> f32 {
         let pulse1 = self.pulse1._get_output() as f32;
@@ -1262,5 +1319,166 @@ mod tests {
         assert!(apu.irq_pending());
         apu.write_register(0x4010, 0x0F);
         assert!(!apu.irq_pending());
+    }
+
+    // ---- Sweep units ----
+
+    /// Enable pulse 1 with duty 3 (a 1 at sequence position 0), constant
+    /// volume 15 and a length, so `pulse1_output` is 15 unless muted.
+    fn audible_pulse1(apu: &mut Apu, period: u16) {
+        apu.write_register(0x4015, 0x01);
+        apu.write_register(0x4000, 0xDF);
+        apu.write_register(0x4002, (period & 0xFF) as u8);
+        apu.write_register(0x4003, ((period >> 8) as u8 & 0x07) | 0x08);
+        run(apu, 1);
+    }
+
+    /// Pulse 1 output at sequence position 0, so the duty cycle does not
+    /// depend on how many cycles the test has stepped.
+    fn pulse1_output(apu: &mut Apu) -> u8 {
+        apu.pulse1.sequence_pos = 0;
+        apu.pulse1._get_output()
+    }
+
+    #[test]
+    fn sweep_target_period_both_negate_modes() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4002, 0x00);
+        apu.write_register(0x4003, 0x01); // 0x100
+        apu.write_register(0x4006, 0x00);
+        apu.write_register(0x4007, 0x01);
+
+        // Add mode, shift 2: 0x100 + 0x40.
+        apu.write_register(0x4001, 0x02);
+        apu.write_register(0x4005, 0x02);
+        assert_eq!(apu.pulse1.sweep_target(), 0x140);
+        assert_eq!(apu.pulse2.sweep_target(), 0x140);
+
+        // Negate, shift 2: pulse 1 subtracts one extra (one's complement).
+        apu.write_register(0x4001, 0x0A);
+        apu.write_register(0x4005, 0x0A);
+        assert_eq!(apu.pulse1.sweep_target(), 0x100 - 0x40 - 1);
+        assert_eq!(apu.pulse2.sweep_target(), 0x100 - 0x40);
+
+        // Negate, shift 0: the change is the whole period, so pulse 2's
+        // target is 0 and pulse 1's would be -1, clamped to 0 (not muted).
+        apu.write_register(0x4001, 0x08);
+        apu.write_register(0x4005, 0x08);
+        assert_eq!(apu.pulse1.sweep_target(), 0);
+        assert_eq!(apu.pulse2.sweep_target(), 0);
+        assert!(!apu.pulse1.sweep_muted());
+
+        // Small period, negate, shift 1: 8 - 4 - 1 and 8 - 4.
+        apu.write_register(0x4002, 0x08);
+        apu.write_register(0x4003, 0x00);
+        apu.write_register(0x4006, 0x08);
+        apu.write_register(0x4007, 0x00);
+        apu.write_register(0x4001, 0x09);
+        apu.write_register(0x4005, 0x09);
+        assert_eq!(apu.pulse1.sweep_target(), 3);
+        assert_eq!(apu.pulse2.sweep_target(), 4);
+    }
+
+    #[test]
+    fn sweep_mutes_on_low_period_and_high_target() {
+        let mut apu = Apu::new();
+        audible_pulse1(&mut apu, 0x100);
+        assert_eq!(pulse1_output(&mut apu), 15, "baseline audible");
+
+        apu.write_register(0x4002, 0x07);
+        apu.write_register(0x4003, 0x08); // period 7
+        run(&mut apu, 1);
+        assert!(apu.pulse1.sweep_muted());
+        assert_eq!(pulse1_output(&mut apu), 0, "period below 8 mutes");
+        apu.write_register(0x4002, 0x08); // period 8
+        assert!(!apu.pulse1.sweep_muted());
+        assert_eq!(pulse1_output(&mut apu), 15);
+
+        // Period 0x700, add mode, shift 1: target 0xA80 exceeds 0x7FF.
+        // The sweep is disabled (bit 7 clear) yet still mutes.
+        apu.write_register(0x4002, 0x00);
+        apu.write_register(0x4003, 0x07 | 0x08);
+        run(&mut apu, 1);
+        apu.write_register(0x4001, 0x01);
+        assert_eq!(apu.pulse1.sweep_target(), 0xA80);
+        assert!(apu.pulse1.sweep_muted());
+        assert_eq!(pulse1_output(&mut apu), 0, "target above 0x7FF mutes");
+
+        // Negate mode brings the target back in range: audible again.
+        apu.write_register(0x4001, 0x09);
+        assert!(!apu.pulse1.sweep_muted());
+        assert_eq!(pulse1_output(&mut apu), 15);
+
+        // Muting does not change the period on a clock even when enabled.
+        apu.write_register(0x4001, 0x81);
+        write_4017(&mut apu, 0x80);
+        assert_eq!(apu.pulse1.timer_period, 0x700);
+    }
+
+    /// Enabled, divider period 0, negate, shift 1: each half-frame halves
+    /// the period, with pulse 1 one lower than pulse 2.
+    #[test]
+    fn sweep_down_sequence_on_half_frame_clocks() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4002, 0x00);
+        apu.write_register(0x4003, 0x01);
+        apu.write_register(0x4006, 0x00);
+        apu.write_register(0x4007, 0x01);
+        apu.write_register(0x4001, 0x89);
+        apu.write_register(0x4005, 0x89);
+
+        let expected1 = [0x7F, 0x3F, 0x1F, 0x0F];
+        let expected2 = [0x80, 0x40, 0x20, 0x10];
+        for i in 0..4 {
+            write_4017(&mut apu, 0x80); // one half-frame clock
+            assert_eq!(apu.pulse1.timer_period, expected1[i], "pulse 1 clock {}", i);
+            assert_eq!(apu.pulse2.timer_period, expected2[i], "pulse 2 clock {}", i);
+        }
+
+        // Once the period drops below 8 the channel mutes and stops moving.
+        write_4017(&mut apu, 0x80);
+        assert_eq!(apu.pulse1.timer_period, 0x07);
+        assert!(apu.pulse1.sweep_muted());
+        write_4017(&mut apu, 0x80);
+        assert_eq!(apu.pulse1.timer_period, 0x07);
+    }
+
+    /// The divider only lets the period change when it is 0; a `$4001`
+    /// write reloads it on the next clock.
+    #[test]
+    fn sweep_divider_reload() {
+        let mut apu = Apu::new();
+        apu.write_register(0x4002, 0x00);
+        apu.write_register(0x4003, 0x01); // 0x100
+        apu.write_register(0x4001, 0xA1); // enabled, P=2, add, shift 1
+
+        write_4017(&mut apu, 0x80); // divider 0: update, reload to 2
+        assert_eq!(apu.pulse1.timer_period, 0x180);
+        assert_eq!(apu.pulse1.sweep_divider, 2);
+        write_4017(&mut apu, 0x80); // 2 -> 1
+        assert_eq!(apu.pulse1.timer_period, 0x180);
+        write_4017(&mut apu, 0x80); // 1 -> 0
+        assert_eq!(apu.pulse1.timer_period, 0x180);
+        assert_eq!(apu.pulse1.sweep_divider, 0);
+        write_4017(&mut apu, 0x80); // 0: update again
+        assert_eq!(apu.pulse1.timer_period, 0x240);
+        assert_eq!(apu.pulse1.sweep_divider, 2);
+
+        // A register write while the divider is mid-count reloads it on the
+        // next clock without changing the period on that clock.
+        write_4017(&mut apu, 0x80); // 2 -> 1
+        apu.write_register(0x4001, 0xB1); // P=3, reload pending
+        assert!(apu.pulse1.sweep_reload);
+        write_4017(&mut apu, 0x80);
+        assert_eq!(apu.pulse1.timer_period, 0x240);
+        assert_eq!(apu.pulse1.sweep_divider, 3);
+        assert!(!apu.pulse1.sweep_reload);
+
+        // Shift 0 never updates the period, even with the divider at 0.
+        apu.write_register(0x4001, 0x80);
+        for _ in 0..3 {
+            write_4017(&mut apu, 0x80);
+        }
+        assert_eq!(apu.pulse1.timer_period, 0x240);
     }
 }
