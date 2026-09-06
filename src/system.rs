@@ -43,6 +43,10 @@ pub struct System {
     /// applied to APU output, as on the NES/Famicom output stage. They
     /// remove the mixer's DC offset so silence is 0.0 and gaps do not pop.
     audio_hp: [(f32, f32); 2],
+    /// Running sum and count of mixer output over the current sample
+    /// period. Averaging every CPU cycle into each 44.1 kHz sample is a box
+    /// low-pass that removes the aliasing point-sampling produces.
+    audio_acc: (f32, u32),
     /// Total CPU cycles executed since power-on or the last
     /// `set_total_cpu_cycles` call. Unlike `cycles` (a per-frame budget)
     /// this never resets; it feeds the nestest-style trace CYC column.
@@ -109,6 +113,7 @@ impl System {
             audio_out: Vec::new(),
             audio_capture: false,
             audio_hp: [(0.0, 0.0); 2],
+            audio_acc: (0.0, 0),
             total_cycles: 0,
             nmi_pending: false,
             nmi_seen_tick: 0,
@@ -216,10 +221,14 @@ impl System {
 
         if self.audio_capture {
             const CYCLES_PER_SAMPLE: f64 = 1_789_773.0 / 44_100.0;
+            self.audio_acc.0 += self.apu.get_output();
+            self.audio_acc.1 += 1;
             self.audio_sample_counter += 1.0;
             if self.audio_sample_counter >= CYCLES_PER_SAMPLE {
                 self.audio_sample_counter -= CYCLES_PER_SAMPLE;
-                let sample = self.filter_audio(self.apu.get_output());
+                let mean = self.audio_acc.0 / self.audio_acc.1 as f32;
+                self.audio_acc = (0.0, 0);
+                let sample = self.filter_audio(mean);
                 self.audio_out.push(sample);
             }
         }

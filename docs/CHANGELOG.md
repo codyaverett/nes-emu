@@ -2,6 +2,20 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.8.2] - 2026-09-05
+
+### Fixed
+- Crackle in audio. Samples were taken by point-sampling the mixer once
+  every 40 CPU cycles with no low-pass, which aliases the pulse and
+  triangle waves. The mixer is now averaged over every CPU cycle of each
+  sample period (a box filter) before the output-stage high-pass filters.
+- The audio queue target is raised to about 55 ms and the SDL callback
+  size lowered to 512 samples, so several callbacks can land between two
+  presents without the queue running dry. A 60 s simulated loop with 3 ms
+  of present jitter shows no underruns.
+
+---
+
 ## [0.8.1] - 2026-09-05
 
 ### Fixed

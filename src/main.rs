@@ -19,10 +19,14 @@ use nes_emu::system::System;
 const SCALE: u32 = 3;
 
 /// Samples the emulator keeps queued ahead of the audio device when audio
-/// is the master clock: about 2.5 NES frames (roughly 40 ms of latency).
-/// The SDL callback pulls 1024 at a time, so this stays comfortably above
-/// one callback's worth while never approaching the queue's hard cap.
-const AUDIO_TARGET_SAMPLES: usize = 1850;
+/// is the master clock: about 3.3 NES frames (roughly 55 ms of latency).
+/// The device pulls `AUDIO_DEVICE_SAMPLES` per callback, so the queue can
+/// absorb several callbacks between two presents without running dry, and
+/// it never approaches the queue's hard cap.
+const AUDIO_TARGET_SAMPLES: usize = 2450;
+/// Samples per SDL callback. Smaller callbacks mean smaller dips in the
+/// queue between presents.
+const AUDIO_DEVICE_SAMPLES: u16 = 512;
 
 struct ApuAudioCallback {
     audio_buffer: Arc<Mutex<VecDeque<f32>>>,
@@ -136,7 +140,7 @@ fn main() -> Result<()> {
         let desired_spec = AudioSpecDesired {
             freq: Some(44100),
             channels: Some(1),
-            samples: Some(1024), // Larger buffer for smoother playback
+            samples: Some(AUDIO_DEVICE_SAMPLES),
         };
 
         let audio_device = audio_subsystem
