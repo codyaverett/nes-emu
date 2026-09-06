@@ -2,6 +2,22 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.11.0] - 2026-09-06
+
+Closes issue 39.
+
+### Added
+- Save states: the whole machine (CPU, RAM, PPU, APU, controllers, every
+  mapper including PRG RAM, CHR RAM and IRQ counters) in a versioned binary
+  file tagged with the ROM CRC-32. Nine slots next to the ROM as .s1 to
+  .s9; F5 saves, F8 loads, F6 and F7 change slot, with an on-screen line;
+  palette commands save state N, load state N, slot N, states; a States
+  page with timestamps. Round trip on Super Mario Bros is bit-exact and a
+  re-save after load equals the original image. See
+  docs/debugging/SAVE_STATES.md.
+
+---
+
 ## [0.10.1] - 2026-09-06
 
 ### Added
