@@ -945,10 +945,10 @@ impl Apu {
             0.0
         };
 
-        // Normalize output from 0.0-0.5 range to -1.0 to +1.0 range for SDL2 audio
-        // First multiply by 2 to get 0.0-1.0, then transform to -1.0 to +1.0
-        let output = (pulse_out + tnd_out) * 2.0;
-        output * 2.0 - 1.0
+        // Mixer output is 0.0 (silence) to about 1.0. It is unipolar like
+        // the real chip; System's audio path high-pass filters it, which
+        // removes the DC offset so silence lands at 0.0 for the device.
+        pulse_out + tnd_out
     }
 }
 

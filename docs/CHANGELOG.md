@@ -2,6 +2,23 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.8.1] - 2026-09-05
+
+### Fixed
+- Choppy audio. The main loop paced emulation with a fixed sleep, and
+  sleep overshoot made it run slightly under 60 fps, so the emulator
+  produced fewer samples than the device consumed and the queue starved
+  about once a second. The audio device is now the master clock: with audio
+  enabled the loop emulates only until about 40 ms of samples are queued,
+  so production tracks 44.1 kHz consumption exactly regardless of sleep
+  jitter or display refresh rate. Without audio the timed pacing remains.
+- The APU mixer output was offset so silence sat at -1.0, making every gap
+  pop. The output stage now applies the NES 90 Hz and 440 Hz high-pass
+  filters, so silence is 0.0, and the SDL callback holds the last sample on
+  an underrun instead of snapping to zero.
+
+---
+
 ## [0.8.0] - 2026-09-05
 
 Accuracy wave 5. Closes issues 21 and 22.

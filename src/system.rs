@@ -39,6 +39,10 @@ pub struct System {
     /// frame so the per-cycle path never takes a mutex.
     audio_out: Vec<f32>,
     audio_capture: bool,
+    /// State of the two first-order high-pass filters (90 Hz and 440 Hz)
+    /// applied to APU output, as on the NES/Famicom output stage. They
+    /// remove the mixer's DC offset so silence is 0.0 and gaps do not pop.
+    audio_hp: [(f32, f32); 2],
     /// Total CPU cycles executed since power-on or the last
     /// `set_total_cpu_cycles` call. Unlike `cycles` (a per-frame budget)
     /// this never resets; it feeds the nestest-style trace CYC column.
@@ -104,6 +108,7 @@ impl System {
             audio_sample_counter: 0.0,
             audio_out: Vec::new(),
             audio_capture: false,
+            audio_hp: [(0.0, 0.0); 2],
             total_cycles: 0,
             nmi_pending: false,
             nmi_seen_tick: 0,
@@ -214,10 +219,26 @@ impl System {
             self.audio_sample_counter += 1.0;
             if self.audio_sample_counter >= CYCLES_PER_SAMPLE {
                 self.audio_sample_counter -= CYCLES_PER_SAMPLE;
-                let sample = self.apu.get_output();
+                let sample = self.filter_audio(self.apu.get_output());
                 self.audio_out.push(sample);
             }
         }
+    }
+
+    /// NES output stage: 90 Hz and 440 Hz first-order high-pass filters
+    /// (the 14 kHz low-pass is above what 44.1 kHz needs). Coefficients are
+    /// exp(-2*pi*f/44100). Scaled by 2 so full-scale mixer output spans
+    /// roughly -1.0 to 1.0.
+    fn filter_audio(&mut self, input: f32) -> f32 {
+        const COEFFS: [f32; 2] = [0.987_25, 0.939_28];
+        let mut x = input;
+        for (hp, coeff) in self.audio_hp.iter_mut().zip(COEFFS) {
+            let (prev_in, prev_out) = *hp;
+            let y = coeff * (prev_out + x - prev_in);
+            *hp = (x, y);
+            x = y;
+        }
+        x * 2.0
     }
 
     fn read_byte(&mut self, addr: u16) -> u8 {

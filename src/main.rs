@@ -18,10 +18,19 @@ use nes_emu::system::System;
 
 const SCALE: u32 = 3;
 
+/// Samples the emulator keeps queued ahead of the audio device when audio
+/// is the master clock: about 2.5 NES frames (roughly 40 ms of latency).
+/// The SDL callback pulls 1024 at a time, so this stays comfortably above
+/// one callback's worth while never approaching the queue's hard cap.
+const AUDIO_TARGET_SAMPLES: usize = 1850;
+
 struct ApuAudioCallback {
     audio_buffer: Arc<Mutex<VecDeque<f32>>>,
     muted: Arc<Mutex<bool>>,
     volume: Arc<Mutex<f32>>,
+    /// Last sample delivered; repeated if the queue runs dry so an
+    /// underrun holds the waveform instead of snapping to zero.
+    last: f32,
 }
 
 impl AudioCallback for ApuAudioCallback {
@@ -33,8 +42,10 @@ impl AudioCallback for ApuAudioCallback {
         let volume = *self.volume.lock().unwrap();
 
         for sample in out.iter_mut() {
-            let raw_sample = buffer.pop_front().unwrap_or(0.0);
-            *sample = if muted { 0.0 } else { raw_sample * volume };
+            if let Some(next) = buffer.pop_front() {
+                self.last = next;
+            }
+            *sample = if muted { 0.0 } else { self.last * volume };
         }
     }
 }
@@ -130,6 +141,7 @@ fn main() -> Result<()> {
 
         let audio_device = audio_subsystem
             .open_playback(None, &desired_spec, |_spec| ApuAudioCallback {
+                last: 0.0,
                 audio_buffer: buffer_clone,
                 muted: muted_clone,
                 volume: volume_clone,
@@ -205,7 +217,23 @@ fn main() -> Result<()> {
             }
         }
 
-        system.run_frame_with_audio(audio_buffer.as_ref());
+        // With audio enabled the audio device is the master clock: emulate
+        // only until enough samples are queued, so production matches the
+        // 44.1 kHz consumption exactly and never drifts with sleep jitter
+        // or the display's refresh rate. Without audio, one frame per
+        // iteration paced by the sleep below.
+        match audio_buffer.as_ref() {
+            Some(buffer) => {
+                let mut frames = 0;
+                while buffer.lock().unwrap().len() < AUDIO_TARGET_SAMPLES && frames < 4 {
+                    system.run_frame_with_audio(Some(buffer));
+                    frames += 1;
+                }
+            }
+            None => {
+                system.run_frame();
+            }
+        }
 
         texture
             .update(None, system.get_frame_buffer(), SCREEN_WIDTH * 3)
@@ -266,7 +294,12 @@ fn main() -> Result<()> {
         canvas.present();
 
         let elapsed = frame_start.elapsed();
-        if elapsed < frame_duration {
+        if audio_buffer.is_some() {
+            // Audio paces emulation; just avoid spinning between presents.
+            if elapsed < Duration::from_millis(2) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        } else if elapsed < frame_duration {
             std::thread::sleep(frame_duration - elapsed);
         } else {
             log::debug!("Frame took too long: {:?}", elapsed);
