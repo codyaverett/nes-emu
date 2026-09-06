@@ -106,6 +106,11 @@ pub fn builtin_commands() -> Vec<Command> {
         Command::run("mute noise", "Silence noise", |app| app.mute_channel(3)),
         Command::run("mute dmc", "Silence DMC", |app| app.mute_channel(4)),
         Command::run("unmute all", "Restore all channels", App::unmute_all),
+        // Save states (docs/debugging/SAVE_STATES.md, issue #39).
+        Command::run_arg("save state", "Save to slot N", App::save_state_command),
+        Command::run_arg("load state", "Load from slot N", App::load_state_command),
+        Command::run_arg("slot", "Pick state slot 1-9", App::slot_command),
+        Command::tool("states", "Save state slots page", ToolId::States),
     ]
 }
 

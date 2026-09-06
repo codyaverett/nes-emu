@@ -257,6 +257,56 @@ impl Mapper for Mapper4 {
         Some(&self.prg_ram)
     }
 
+    // State: bank_select u8, bank_data 8 x u8, prg_ram_enabled bool,
+    // prg_ram_write_protect bool, four_screen bool, mirroring u8,
+    // irq_enabled bool, irq_counter u8, irq_latch u8, irq_reload bool,
+    // irq_pending bool, prg_banks 4 x u32, chr_banks 8 x u32, PRG RAM
+    // 8 KB, CHR. The resolved bank offsets are written as well as the
+    // registers they derive from, so the image is the whole struct.
+    fn save_state(&self, w: &mut crate::state::Writer) {
+        w.u8(self.bank_select);
+        w.bytes(&self.bank_data);
+        w.bool(self.prg_ram_enabled);
+        w.bool(self.prg_ram_write_protect);
+        w.bool(self.four_screen);
+        w.u8(self.mirroring);
+        w.bool(self.irq_enabled);
+        w.u8(self.irq_counter);
+        w.u8(self.irq_latch);
+        w.bool(self.irq_reload);
+        w.bool(self.irq_pending);
+        for bank in &self.prg_banks {
+            w.u32(*bank as u32);
+        }
+        for bank in &self.chr_banks {
+            w.u32(*bank as u32);
+        }
+        w.bytes(&self.prg_ram);
+        self.chr.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.bank_select = r.u8()?;
+        r.bytes(&mut self.bank_data)?;
+        self.prg_ram_enabled = r.bool()?;
+        self.prg_ram_write_protect = r.bool()?;
+        self.four_screen = r.bool()?;
+        self.mirroring = r.u8()?;
+        self.irq_enabled = r.bool()?;
+        self.irq_counter = r.u8()?;
+        self.irq_latch = r.u8()?;
+        self.irq_reload = r.bool()?;
+        self.irq_pending = r.bool()?;
+        for bank in self.prg_banks.iter_mut() {
+            *bank = r.u32()? as usize;
+        }
+        for bank in self.chr_banks.iter_mut() {
+            *bank = r.u32()? as usize;
+        }
+        r.bytes(&mut self.prg_ram)?;
+        self.chr.load_state(r)
+    }
+
     fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
         Some(&mut self.prg_ram)
     }
@@ -442,5 +492,79 @@ mod tests {
         }
         assert_eq!(m.ppu_peek(0x0000), 6);
         assert_eq!(m.ppu_peek(0x1000), 21);
+    }
+
+    #[test]
+    fn save_state_round_trips_banks_and_irq_counter() {
+        use crate::state::{Reader, Writer};
+        let mut m = Mapper4::new(
+            tagged_rom(16, 0x2000),
+            tagged_rom(64, 0x400),
+            Mirroring::Vertical,
+        );
+        // PRG mode 1, CHR mode 1, a bank in every register.
+        m.cpu_write(0x8000, 0xC6);
+        m.cpu_write(0x8001, 9);
+        m.cpu_write(0x8000, 0xC7);
+        m.cpu_write(0x8001, 4);
+        for (reg, bank) in [(0u8, 10u8), (1, 20), (2, 30), (3, 31), (4, 32), (5, 33)] {
+            m.cpu_write(0x8000, 0xC0 | reg);
+            m.cpu_write(0x8001, bank);
+        }
+        m.cpu_write(0xA000, 1);
+        m.cpu_write(0xA001, 0x80);
+        m.cpu_write(0x6010, 0x5A);
+        // Arm the IRQ counter and clock it part way.
+        m.cpu_write(0xC000, 8);
+        m.cpu_write(0xC001, 0);
+        m.cpu_write(0xE001, 0);
+        for _ in 0..4 {
+            m.ppu_a12_rise();
+        }
+        let mut w = Writer::new();
+        m.save_state(&mut w);
+        let bytes = w.into_bytes();
+        let snapshot = |m: &mut Mapper4| {
+            let mut v = Vec::new();
+            for addr in (0x8000..=0xFFFF).step_by(0x2000) {
+                v.push(m.cpu_read(addr));
+            }
+            for addr in (0x0000..0x2000).step_by(0x400) {
+                v.push(m.ppu_read(addr));
+            }
+            v
+        };
+        let before = snapshot(&mut m);
+
+        // Switch everything again and let the IRQ fire.
+        m.cpu_write(0x8000, 0x06);
+        m.cpu_write(0x8001, 1);
+        m.cpu_write(0x8000, 0x00);
+        m.cpu_write(0x8001, 2);
+        m.cpu_write(0xA000, 0);
+        for _ in 0..8 {
+            m.ppu_a12_rise();
+        }
+        assert!(m.irq_pending());
+        assert_ne!(snapshot(&mut m), before);
+
+        let mut r = Reader::new(&bytes);
+        m.load_state(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(snapshot(&mut m), before);
+        assert_eq!(m.mirroring(), Mirroring::Horizontal);
+        assert_eq!(m.cpu_read(0x6010), 0x5A);
+        assert!(!m.irq_pending());
+        // The first rise reloaded 8 and three more counted it down to 5;
+        // the fifth rise from here reaches zero and raises the IRQ.
+        for _ in 0..4 {
+            m.ppu_a12_rise();
+        }
+        assert!(!m.irq_pending());
+        m.ppu_a12_rise();
+        assert!(m.irq_pending());
+        let mut again = Writer::new();
+        m.save_state(&mut again);
+        assert_ne!(again.into_bytes(), bytes, "the IRQ state moved on");
     }
 }

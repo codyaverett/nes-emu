@@ -1543,3 +1543,296 @@ mod tests {
         assert_eq!(CHANNEL_NAMES.len(), CHANNEL_COUNT);
     }
 }
+
+// ----------------------------------------------------------------------
+// Save states (docs/debugging/SAVE_STATES.md). Section "APU ": pulse 1,
+// pulse 2, triangle, noise, DMC, then the frame sequencer and mute flags.
+// Each channel writes its own fields in declaration order.
+// ----------------------------------------------------------------------
+
+use crate::state::{Reader, StateError, Writer};
+
+impl LengthCounter {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.enabled);
+        w.u8(self.counter);
+        w.bool(self.halt);
+        w.opt_bool(self.pending_halt);
+        w.opt_u8(self.pending_reload);
+        w.u8(self.counter_at_write);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.enabled = r.bool()?;
+        self.counter = r.u8()?;
+        self.halt = r.bool()?;
+        self.pending_halt = r.opt_bool()?;
+        self.pending_reload = r.opt_u8()?;
+        self.counter_at_write = r.u8()?;
+        Ok(())
+    }
+}
+
+impl Pulse {
+    fn save_state(&self, w: &mut Writer) {
+        w.u8(self.duty);
+        w.u8(self.volume);
+        w.bool(self.constant_volume);
+        w.bool(self.envelope_loop);
+        w.u8(self.envelope_period);
+        w.u8(self.envelope_counter);
+        w.u8(self.envelope_divider);
+        w.bool(self.envelope_start);
+        w.bool(self.sweep_enabled);
+        w.u8(self.sweep_period);
+        w.bool(self.sweep_negate);
+        w.u8(self.sweep_shift);
+        w.u8(self.sweep_divider);
+        w.bool(self.sweep_reload);
+        w.bool(self.sweep_ones_complement);
+        w.u16(self.timer_period);
+        w.u16(self.timer_counter);
+        self.length.save_state(w);
+        w.u8(self.sequence_pos);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.duty = r.u8()?;
+        self.volume = r.u8()?;
+        self.constant_volume = r.bool()?;
+        self.envelope_loop = r.bool()?;
+        self.envelope_period = r.u8()?;
+        self.envelope_counter = r.u8()?;
+        self.envelope_divider = r.u8()?;
+        self.envelope_start = r.bool()?;
+        self.sweep_enabled = r.bool()?;
+        self.sweep_period = r.u8()?;
+        self.sweep_negate = r.bool()?;
+        self.sweep_shift = r.u8()?;
+        self.sweep_divider = r.u8()?;
+        self.sweep_reload = r.bool()?;
+        self.sweep_ones_complement = r.bool()?;
+        self.timer_period = r.u16()?;
+        self.timer_counter = r.u16()?;
+        self.length.load_state(r)?;
+        self.sequence_pos = r.u8()?;
+        Ok(())
+    }
+}
+
+impl Triangle {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.control);
+        w.u8(self.linear_counter);
+        w.u8(self.linear_counter_period);
+        w.bool(self.linear_counter_reload);
+        w.u16(self.timer_period);
+        w.u16(self.timer_counter);
+        self.length.save_state(w);
+        w.u8(self.sequence_pos);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.control = r.bool()?;
+        self.linear_counter = r.u8()?;
+        self.linear_counter_period = r.u8()?;
+        self.linear_counter_reload = r.bool()?;
+        self.timer_period = r.u16()?;
+        self.timer_counter = r.u16()?;
+        self.length.load_state(r)?;
+        self.sequence_pos = r.u8()?;
+        Ok(())
+    }
+}
+
+impl Noise {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.mode);
+        w.u8(self.volume);
+        w.bool(self.constant_volume);
+        w.bool(self.envelope_loop);
+        w.u8(self.envelope_period);
+        w.u8(self.envelope_counter);
+        w.u8(self.envelope_divider);
+        w.bool(self.envelope_start);
+        w.u16(self.timer_period);
+        w.u16(self.timer_counter);
+        self.length.save_state(w);
+        w.u16(self.shift_register);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.mode = r.bool()?;
+        self.volume = r.u8()?;
+        self.constant_volume = r.bool()?;
+        self.envelope_loop = r.bool()?;
+        self.envelope_period = r.u8()?;
+        self.envelope_counter = r.u8()?;
+        self.envelope_divider = r.u8()?;
+        self.envelope_start = r.bool()?;
+        self.timer_period = r.u16()?;
+        self.timer_counter = r.u16()?;
+        self.length.load_state(r)?;
+        self.shift_register = r.u16()?;
+        Ok(())
+    }
+}
+
+impl Dmc {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.enabled);
+        w.u8(self.rate);
+        w.u8(self.direct_load);
+        w.u16(self.sample_address);
+        w.u16(self.sample_length);
+        w.u16(self.current_address);
+        w.u16(self.bytes_remaining);
+        w.opt_u8(self.sample_buffer);
+        w.u8(self.output_level);
+        w.u8(self.shift_register);
+        w.u8(self.bits_remaining);
+        w.bool(self.silence_flag);
+        w.u16(self.timer_counter);
+        w.bool(self.irq_enabled);
+        w.bool(self.loop_flag);
+        w.bool(self.interrupt);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.enabled = r.bool()?;
+        self.rate = r.u8()?;
+        self.direct_load = r.u8()?;
+        self.sample_address = r.u16()?;
+        self.sample_length = r.u16()?;
+        self.current_address = r.u16()?;
+        self.bytes_remaining = r.u16()?;
+        self.sample_buffer = r.opt_u8()?;
+        self.output_level = r.u8()?;
+        self.shift_register = r.u8()?;
+        self.bits_remaining = r.u8()?;
+        self.silence_flag = r.bool()?;
+        self.timer_counter = r.u16()?;
+        self.irq_enabled = r.bool()?;
+        self.loop_flag = r.bool()?;
+        self.interrupt = r.bool()?;
+        Ok(())
+    }
+}
+
+impl crate::state::Snapshot for Apu {
+    fn save(&self, w: &mut Writer) {
+        self.pulse1.save_state(w);
+        self.pulse2.save_state(w);
+        self.triangle.save_state(w);
+        self.noise.save_state(w);
+        self.dmc.save_state(w);
+        w.u8(self.status.bits());
+        w.u8(self.frame_counter);
+        w.bool(self.frame_5step);
+        w.u32(self.frame_cycle);
+        w.u8(self.frame_reset_delay);
+        w.bool(self.frame_interrupt);
+        w.bool(self.frame_interrupt_inhibit);
+        w.u64(self.cycles);
+        for muted in &self.channel_muted {
+            w.bool(*muted);
+        }
+    }
+
+    fn load(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.pulse1.load_state(r)?;
+        self.pulse2.load_state(r)?;
+        self.triangle.load_state(r)?;
+        self.noise.load_state(r)?;
+        self.dmc.load_state(r)?;
+        self.status = ApuStatus::from_bits_retain(r.u8()?);
+        self.frame_counter = r.u8()?;
+        self.frame_5step = r.bool()?;
+        self.frame_cycle = r.u32()?;
+        self.frame_reset_delay = r.u8()?;
+        self.frame_interrupt = r.bool()?;
+        self.frame_interrupt_inhibit = r.bool()?;
+        self.cycles = r.u64()?;
+        for muted in self.channel_muted.iter_mut() {
+            *muted = r.bool()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use crate::state::Snapshot;
+
+    fn image(apu: &Apu) -> Vec<u8> {
+        let mut w = Writer::new();
+        apu.save(&mut w);
+        w.into_bytes()
+    }
+
+    /// Program every channel, run a while so envelopes, sweeps, timers,
+    /// the length counters and the DMC reader are all mid-flight.
+    fn busy_apu() -> Apu {
+        let mut apu = Apu::new();
+        apu.write_register(0x4015, 0x1F);
+        apu.write_register(0x4000, 0x9A);
+        apu.write_register(0x4001, 0xA9);
+        apu.write_register(0x4002, 0x34);
+        apu.write_register(0x4003, 0x12);
+        apu.write_register(0x4004, 0x3C);
+        apu.write_register(0x4005, 0x81);
+        apu.write_register(0x4006, 0x56);
+        apu.write_register(0x4007, 0x33);
+        apu.write_register(0x4008, 0x7F);
+        apu.write_register(0x400A, 0x78);
+        apu.write_register(0x400B, 0x45);
+        apu.write_register(0x400C, 0x25);
+        apu.write_register(0x400E, 0x85);
+        apu.write_register(0x400F, 0x58);
+        apu.write_register(0x4010, 0x4F);
+        apu.write_register(0x4011, 0x35);
+        apu.write_register(0x4012, 0x40);
+        apu.write_register(0x4013, 0x10);
+        apu.write_register(0x4017, 0x80);
+        for i in 0..5000u32 {
+            apu.step();
+            if apu.dmc_fetch_address().is_some() {
+                apu.dmc_supply_sample(i as u8);
+            }
+        }
+        // Land a pending length reload and halt in the image too.
+        apu.write_register(0x4003, 0x99);
+        apu.set_channel_muted(1, true);
+        apu.set_channel_muted(4, true);
+        apu
+    }
+
+    #[test]
+    fn apu_round_trips_and_keeps_producing_the_same_output() {
+        let original = busy_apu();
+        let bytes = image(&original);
+        let mut restored = Apu::new();
+        let mut r = Reader::new(&bytes);
+        restored.load(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(image(&restored), bytes);
+
+        let mut a = original;
+        let mut b = restored;
+        for i in 0..20000u32 {
+            a.step();
+            b.step();
+            if a.dmc_fetch_address().is_some() {
+                a.dmc_supply_sample(i as u8);
+            }
+            if b.dmc_fetch_address().is_some() {
+                b.dmc_supply_sample(i as u8);
+            }
+            assert_eq!(a.get_output(), b.get_output(), "cycle {i}");
+            assert_eq!(a.irq_pending(), b.irq_pending(), "cycle {i}");
+        }
+        assert_eq!(image(&a), image(&b));
+        assert!(b.channel_muted(1) && b.channel_muted(4) && !b.channel_muted(0));
+    }
+}

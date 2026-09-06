@@ -137,6 +137,19 @@ impl Mapper for Mapper227 {
             Mirroring::Vertical
         }
     }
+
+    // State: latch u16, PRG RAM 8 KB, CHR.
+    fn save_state(&self, w: &mut crate::state::Writer) {
+        w.u16(self.latch);
+        w.bytes(&self.prg_ram);
+        self.chr.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.latch = r.u16()?;
+        r.bytes(&mut self.prg_ram)?;
+        self.chr.load_state(r)
+    }
 }
 
 #[cfg(test)]
@@ -276,5 +289,34 @@ mod tests {
         m.cpu_write(reg(0, false, false, false, false), 0);
         m.ppu_write(0x0010, 0x44);
         assert_eq!(m.ppu_read(0x0010), 0x44);
+    }
+
+    #[test]
+    fn save_state_round_trips_the_latch() {
+        use crate::state::{Reader, Writer};
+        let mut m = Mapper227::new(tagged_rom(32, 0x4000), vec![], Mirroring::Vertical);
+        m.cpu_write(reg(9, false, false, false, true), 0);
+        m.ppu_write(0x0010, 0x11);
+        let before = (m.cpu_read(0x8000), m.cpu_read(0xC000), m.mirroring());
+        let mut w = Writer::new();
+        m.save_state(&mut w);
+        let bytes = w.into_bytes();
+
+        m.cpu_write(reg(3, true, true, true, false), 0);
+        assert_ne!(
+            (m.cpu_read(0x8000), m.cpu_read(0xC000), m.mirroring()),
+            before
+        );
+        let mut r = Reader::new(&bytes);
+        m.load_state(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(
+            (m.cpu_read(0x8000), m.cpu_read(0xC000), m.mirroring()),
+            before
+        );
+        assert_eq!(m.ppu_read(0x0010), 0x11);
+        let mut again = Writer::new();
+        m.save_state(&mut again);
+        assert_eq!(again.into_bytes(), bytes);
     }
 }

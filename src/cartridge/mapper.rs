@@ -8,6 +8,7 @@
 //! the PPU; the PPU asks `mirroring()` per access.
 
 use super::Mirroring;
+use crate::state::{Reader, StateError, Writer};
 
 pub trait Mapper: Send {
     /// CPU bus read for $4020-$FFFF (PRG ROM, PRG RAM, mapper registers).
@@ -67,6 +68,47 @@ pub trait Mapper: Send {
     fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
         None
     }
+
+    /// Write the board's mutable state (registers, bank selects, PRG RAM,
+    /// CHR RAM, IRQ counters) for a save state; it becomes the payload of
+    /// the "MAPR" section (docs/debugging/SAVE_STATES.md). The default
+    /// writes nothing, which pairs with the default `load_state`.
+    fn save_state(&self, _w: &mut Writer) {}
+
+    /// Restore what `save_state` wrote. The default restores nothing and
+    /// logs a warning, so a board without an implementation still loads
+    /// the rest of the machine (with a stale mapper).
+    fn load_state(&mut self, _r: &mut Reader) -> Result<(), StateError> {
+        log::warn!("This mapper has no save-state support; mapper state not restored");
+        Ok(())
+    }
+}
+
+/// `Mirroring` as one byte in a save state.
+pub(crate) fn mirroring_to_u8(m: Mirroring) -> u8 {
+    match m {
+        Mirroring::Horizontal => 0,
+        Mirroring::Vertical => 1,
+        Mirroring::FourScreen => 2,
+        Mirroring::SingleScreenLower => 3,
+        Mirroring::SingleScreenUpper => 4,
+    }
+}
+
+pub(crate) fn mirroring_from_u8(v: u8) -> Result<Mirroring, StateError> {
+    Ok(match v {
+        0 => Mirroring::Horizontal,
+        1 => Mirroring::Vertical,
+        2 => Mirroring::FourScreen,
+        3 => Mirroring::SingleScreenLower,
+        4 => Mirroring::SingleScreenUpper,
+        other => {
+            return Err(StateError::BadValue(
+                "MAPR".into(),
+                format!("mirroring code {other}"),
+            ))
+        }
+    })
 }
 
 /// Mapper used when no cartridge is loaded: open bus everywhere.
@@ -127,6 +169,41 @@ impl Chr {
             let len = self.data.len();
             self.data[offset % len] = value;
         }
+    }
+
+    /// Save-state image: a RAM flag, then the RAM contents as a blob when
+    /// the board has CHR RAM. CHR ROM is never written; it comes from the
+    /// cartridge.
+    pub fn save_state(&self, w: &mut Writer) {
+        w.bool(self.is_ram);
+        if self.is_ram {
+            w.blob(&self.data);
+        }
+    }
+
+    pub fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        let is_ram = r.bool()?;
+        if is_ram != self.is_ram {
+            return Err(StateError::BadValue(
+                "MAPR".into(),
+                "CHR RAM flag does not match the loaded cartridge".into(),
+            ));
+        }
+        if is_ram {
+            let data = r.blob()?;
+            if data.len() != self.data.len() {
+                return Err(StateError::BadValue(
+                    "MAPR".into(),
+                    format!(
+                        "CHR RAM is {} bytes, state has {}",
+                        self.data.len(),
+                        data.len()
+                    ),
+                ));
+            }
+            self.data.copy_from_slice(data);
+        }
+        Ok(())
     }
 }
 

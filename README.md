@@ -69,6 +69,8 @@ Or use the provided test scripts:
 - **P** / **N**: Pause or resume / frame advance
 - **M**, **Plus**, **Minus**: Mute, volume up, volume down
 - **R**: Reset emulator
+- **F5** / **F8**: Save / load the current save-state slot (`<rom>.s1` .. `.s9`)
+- **F6** / **F7**: Previous / next save-state slot; the `states` palette command lists them
 - **Escape**: Close the palette or tool page; in the game, exit
 
 ## Supported Mappers

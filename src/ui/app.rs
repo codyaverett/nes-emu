@@ -73,7 +73,18 @@ pub struct App {
     pub pending_tool: Option<ToolId>,
     /// First address the memory page shows, kept across opens.
     pub memory_addr: u16,
+    /// The ROM file; save states live next to it as `<rom>.s1` .. `.s9`
+    /// (docs/debugging/SAVE_STATES.md, issue #39).
+    pub rom_path: PathBuf,
+    /// Current save-state slot, 1 to [`STATE_SLOTS`].
+    pub slot: u8,
+    /// One-line message drawn over the game until the instant passes
+    /// ("Saved slot 3"). Independent of the volume indicator.
+    pub osd_text: Option<(String, Instant)>,
 }
+
+/// Number of save-state slots.
+pub const STATE_SLOTS: u8 = 9;
 
 impl App {
     pub fn new(
@@ -82,8 +93,7 @@ impl App {
         muted: Arc<Mutex<bool>>,
         volume: Arc<Mutex<f32>>,
         crop_enabled: bool,
-        save_path: PathBuf,
-        cheat_path: PathBuf,
+        rom_path: PathBuf,
     ) -> Self {
         App {
             system,
@@ -96,17 +106,177 @@ impl App {
             crop_dirty: false,
             quit_requested: false,
             osd_until: None,
-            save_path,
-            cheat_path,
+            save_path: rom_path.with_extension("sav"),
+            cheat_path: rom_path.with_extension("cht"),
             cheat_error: None,
             commands: commands::builtin_commands(),
             pending_tool: None,
             memory_addr: 0,
+            rom_path,
+            slot: 1,
+            osd_text: None,
         }
     }
 
     pub fn audio_enabled(&self) -> bool {
         self.audio_buffer.is_some()
+    }
+
+    // Save states (docs/debugging/SAVE_STATES.md, issue #39).
+
+    /// Show `text` over the game for `OSD_DURATION`.
+    pub fn show_message(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        log::info!("{}", text);
+        self.osd_text = Some((text, Instant::now() + OSD_DURATION));
+    }
+
+    /// The message to draw this frame, if one is still current.
+    pub fn osd_message(&self) -> Option<&str> {
+        match &self.osd_text {
+            Some((text, until)) if Instant::now() < *until => Some(text),
+            _ => None,
+        }
+    }
+
+    /// `<rom>.sN` for slot `n`.
+    pub fn state_path(&self, slot: u8) -> PathBuf {
+        self.rom_path.with_extension(format!("s{slot}"))
+    }
+
+    /// Snapshot the machine into `slot` and make it the current slot.
+    pub fn save_state_to(&mut self, slot: u8) {
+        if !(1..=STATE_SLOTS).contains(&slot) {
+            self.show_message(format!("Slot must be 1-{STATE_SLOTS}"));
+            return;
+        }
+        self.slot = slot;
+        let path = self.state_path(slot);
+        let image = self.system.save_state();
+        match std::fs::write(&path, &image) {
+            Ok(()) => self.show_message(format!("Saved slot {slot}")),
+            Err(e) => {
+                log::warn!("Could not write {}: {}", path.display(), e);
+                self.show_message(format!("Save failed: {e}"));
+            }
+        }
+    }
+
+    /// Restore the machine from `slot` and make it the current slot. A
+    /// missing file or a state for another ROM is reported on the OSD
+    /// and leaves the machine untouched. While paused, one frame is run
+    /// so the picture shows the restored state.
+    pub fn load_state_from(&mut self, slot: u8) {
+        if !(1..=STATE_SLOTS).contains(&slot) {
+            self.show_message(format!("Slot must be 1-{STATE_SLOTS}"));
+            return;
+        }
+        self.slot = slot;
+        let path = self.state_path(slot);
+        let image = match std::fs::read(&path) {
+            Ok(image) => image,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.show_message(format!("Slot {slot} is empty"));
+                return;
+            }
+            Err(e) => {
+                log::warn!("Could not read {}: {}", path.display(), e);
+                self.show_message(format!("Load failed: {e}"));
+                return;
+            }
+        };
+        match self.system.load_state(&image) {
+            Ok(()) => {
+                if self.paused {
+                    self.frame_advance = true;
+                }
+                self.show_message(format!("Loaded slot {slot}"));
+            }
+            Err(e) => {
+                log::warn!("Could not load {}: {}", path.display(), e);
+                self.show_message(format!("Load failed: {e}"));
+            }
+        }
+    }
+
+    /// F5: save to the current slot.
+    pub fn save_state(&mut self) {
+        self.save_state_to(self.slot);
+    }
+
+    /// F8: load the current slot.
+    pub fn load_state(&mut self) {
+        self.load_state_from(self.slot);
+    }
+
+    /// F6 / F7: step the current slot, wrapping.
+    pub fn prev_slot(&mut self) {
+        self.set_slot(if self.slot <= 1 {
+            STATE_SLOTS
+        } else {
+            self.slot - 1
+        });
+    }
+
+    pub fn next_slot(&mut self) {
+        self.set_slot(if self.slot >= STATE_SLOTS {
+            1
+        } else {
+            self.slot + 1
+        });
+    }
+
+    pub fn set_slot(&mut self, slot: u8) {
+        if !(1..=STATE_SLOTS).contains(&slot) {
+            self.show_message(format!("Slot must be 1-{STATE_SLOTS}"));
+            return;
+        }
+        self.slot = slot;
+        let status = if self.state_path(slot).exists() {
+            "saved"
+        } else {
+            "empty"
+        };
+        self.show_message(format!("Slot {slot} ({status})"));
+    }
+
+    /// Slot number from a palette argument: empty means the current slot.
+    fn slot_argument(&self, arg: &str) -> Option<u8> {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return Some(self.slot);
+        }
+        arg.parse::<u8>()
+            .ok()
+            .filter(|n| (1..=STATE_SLOTS).contains(n))
+    }
+
+    /// `save state [N]` from the palette.
+    pub fn save_state_command(&mut self, arg: &str) {
+        match self.slot_argument(arg) {
+            Some(slot) => self.save_state_to(slot),
+            None => self.show_message(format!("save state needs a slot 1-{STATE_SLOTS}")),
+        }
+    }
+
+    /// `load state [N]` from the palette.
+    pub fn load_state_command(&mut self, arg: &str) {
+        match self.slot_argument(arg) {
+            Some(slot) => self.load_state_from(slot),
+            None => self.show_message(format!("load state needs a slot 1-{STATE_SLOTS}")),
+        }
+    }
+
+    /// `slot N` from the palette; a bare `slot` opens the States page.
+    pub fn slot_command(&mut self, arg: &str) {
+        if arg.trim().is_empty() {
+            self.pending_tool = Some(ToolId::States);
+            return;
+        }
+        match self.slot_argument(arg) {
+            Some(slot) => self.set_slot(slot),
+            None => self.show_message(format!("slot needs a number 1-{STATE_SLOTS}")),
+        }
     }
 
     /// Pixels cropped from each edge of the 256x240 frame.

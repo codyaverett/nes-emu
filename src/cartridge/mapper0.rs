@@ -79,6 +79,19 @@ impl Mapper for Mapper0 {
         Some(&self.prg_ram)
     }
 
+    // State: mirroring u8, PRG RAM 8 KB, CHR (see `Chr::save_state`).
+    fn save_state(&self, w: &mut crate::state::Writer) {
+        w.u8(super::mapper::mirroring_to_u8(self.mirroring));
+        w.bytes(&self.prg_ram);
+        self.chr.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.mirroring = super::mapper::mirroring_from_u8(r.u8()?)?;
+        r.bytes(&mut self.prg_ram)?;
+        self.chr.load_state(r)
+    }
+
     fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
         Some(&mut self.prg_ram)
     }
@@ -147,5 +160,27 @@ mod tests {
         assert_eq!(m.ppu_peek(0x0123), 0xAB);
         assert_eq!(m.ppu_peek(0x0123), m.ppu_read(0x0123));
         assert_eq!(m.ppu_peek(0x0124), 0);
+    }
+
+    #[test]
+    fn save_state_round_trips_prg_and_chr_ram() {
+        use crate::state::{Reader, Writer};
+        let mut m = Mapper0::new(vec![0; 0x8000], vec![], Mirroring::Vertical);
+        m.cpu_write(0x6123, 0x42);
+        m.ppu_write(0x0456, 0x24);
+        let mut w = Writer::new();
+        m.save_state(&mut w);
+        let bytes = w.into_bytes();
+
+        m.cpu_write(0x6123, 0);
+        m.ppu_write(0x0456, 0);
+        let mut r = Reader::new(&bytes);
+        m.load_state(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(m.cpu_read(0x6123), 0x42);
+        assert_eq!(m.ppu_read(0x0456), 0x24);
+        let mut again = Writer::new();
+        m.save_state(&mut again);
+        assert_eq!(again.into_bytes(), bytes);
     }
 }

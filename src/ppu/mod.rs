@@ -1901,3 +1901,227 @@ mod tests {
         assert!(!m.irq_pending(), "no clock on the next line before 324");
     }
 }
+
+// ----------------------------------------------------------------------
+// Save states (docs/debugging/SAVE_STATES.md). Section "PPU ". The frame
+// buffer is not part of the state: a state is taken between frames and
+// the next frame redraws it (while rendering is enabled).
+// ----------------------------------------------------------------------
+
+impl crate::state::Snapshot for Ppu {
+    fn save(&self, w: &mut crate::state::Writer) {
+        // Registers.
+        w.u8(self.ctrl.bits());
+        w.u8(self.mask.bits());
+        w.u8(self.status.bits());
+        w.u8(self.oam_addr);
+        w.bytes(&self.oam_data);
+        w.u8(self.ppu_data_buffer);
+        w.bytes(&self.nametable_ram);
+        w.bytes(&self.palette);
+        // Position.
+        w.u16(self.scanline);
+        w.u16(self.cycle);
+        w.u64(self.frame);
+        // A12 filter.
+        w.bool(self.a12_last);
+        w.u16(self.a12_low_cycles);
+        // I/O bus latch.
+        w.u8(self.io_bus);
+        for stamp in &self.io_bus_stamp {
+            w.u64(*stamp);
+        }
+        // NMI.
+        w.bool(self.nmi_interrupt);
+        w.bool(self.nmi_line);
+        w.bool(self.suppress_vbl);
+        // Scroll registers.
+        w.u16(self.v);
+        w.u16(self.t);
+        w.u8(self.x);
+        w.bool(self.w);
+        // Background pipeline.
+        w.u16(self.bg_shift_pattern_lo);
+        w.u16(self.bg_shift_pattern_hi);
+        w.u16(self.bg_shift_attrib_lo);
+        w.u16(self.bg_shift_attrib_hi);
+        w.u8(self.bg_next_tile_id);
+        w.u8(self.bg_next_tile_attrib);
+        w.u8(self.bg_next_tile_lsb);
+        w.u8(self.bg_next_tile_msb);
+        // Sprite evaluation.
+        w.bytes(&self.secondary_oam);
+        w.u8(self.oam_copy_buffer);
+        w.u8(self.eval_n);
+        w.u8(self.eval_m);
+        w.u8(self.eval_sec_addr);
+        w.bool(self.eval_in_range);
+        w.bool(self.eval_done);
+        w.u8(self.eval_overflow_reads);
+        w.bool(self.eval_first);
+        w.bool(self.sprite_zero_next);
+        // Sprite render units.
+        w.u8(self.sprite_count);
+        w.bool(self.sprite_zero_in_units);
+        for (lo, hi) in &self.sprite_patterns {
+            w.u8(*lo);
+            w.u8(*hi);
+        }
+        w.bytes(&self.sprite_positions);
+        w.bytes(&self.sprite_attributes);
+    }
+
+    fn load(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.ctrl = PpuCtrl::from_bits_retain(r.u8()?);
+        self.mask = PpuMask::from_bits_retain(r.u8()?);
+        self.status = PpuStatus::from_bits_retain(r.u8()?);
+        self.oam_addr = r.u8()?;
+        r.bytes(&mut self.oam_data)?;
+        self.ppu_data_buffer = r.u8()?;
+        r.bytes(&mut self.nametable_ram)?;
+        r.bytes(&mut self.palette)?;
+        self.scanline = r.u16()?;
+        self.cycle = r.u16()?;
+        self.frame = r.u64()?;
+        self.a12_last = r.bool()?;
+        self.a12_low_cycles = r.u16()?;
+        self.io_bus = r.u8()?;
+        for stamp in self.io_bus_stamp.iter_mut() {
+            *stamp = r.u64()?;
+        }
+        self.nmi_interrupt = r.bool()?;
+        self.nmi_line = r.bool()?;
+        self.suppress_vbl = r.bool()?;
+        self.v = r.u16()?;
+        self.t = r.u16()?;
+        self.x = r.u8()?;
+        self.w = r.bool()?;
+        self.bg_shift_pattern_lo = r.u16()?;
+        self.bg_shift_pattern_hi = r.u16()?;
+        self.bg_shift_attrib_lo = r.u16()?;
+        self.bg_shift_attrib_hi = r.u16()?;
+        self.bg_next_tile_id = r.u8()?;
+        self.bg_next_tile_attrib = r.u8()?;
+        self.bg_next_tile_lsb = r.u8()?;
+        self.bg_next_tile_msb = r.u8()?;
+        r.bytes(&mut self.secondary_oam)?;
+        self.oam_copy_buffer = r.u8()?;
+        self.eval_n = r.u8()?;
+        self.eval_m = r.u8()?;
+        self.eval_sec_addr = r.u8()?;
+        self.eval_in_range = r.bool()?;
+        self.eval_done = r.bool()?;
+        self.eval_overflow_reads = r.u8()?;
+        self.eval_first = r.bool()?;
+        self.sprite_zero_next = r.bool()?;
+        self.sprite_count = r.u8()?;
+        self.sprite_zero_in_units = r.bool()?;
+        for pattern in self.sprite_patterns.iter_mut() {
+            *pattern = (r.u8()?, r.u8()?);
+        }
+        r.bytes(&mut self.sprite_positions)?;
+        r.bytes(&mut self.sprite_attributes)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use crate::state::{Reader, Snapshot, Writer};
+
+    /// Fill every field with a distinct value so a swapped or missed field
+    /// shows up in the comparison.
+    fn busy_ppu() -> Ppu {
+        let mut p = Ppu::new();
+        p.ctrl = PpuCtrl::from_bits_retain(0x91);
+        p.mask = PpuMask::from_bits_retain(0x1E);
+        p.status = PpuStatus::from_bits_retain(0xC0);
+        p.oam_addr = 0x24;
+        for (i, b) in p.oam_data.iter_mut().enumerate() {
+            *b = i as u8 ^ 0x5A;
+        }
+        p.ppu_data_buffer = 0x77;
+        for (i, b) in p.nametable_ram.iter_mut().enumerate() {
+            *b = (i * 7) as u8;
+        }
+        for (i, b) in p.palette.iter_mut().enumerate() {
+            *b = i as u8 + 0x10;
+        }
+        p.scanline = 123;
+        p.cycle = 321;
+        p.frame = 0x1122_3344_5566;
+        p.a12_last = true;
+        p.a12_low_cycles = 9;
+        p.io_bus = 0xA5;
+        p.io_bus_stamp = [1, 2, 3, 4, 5, 6, 7, 8];
+        p.nmi_interrupt = true;
+        p.nmi_line = true;
+        p.suppress_vbl = true;
+        p.v = 0x2C1F;
+        p.t = 0x0C00;
+        p.x = 5;
+        p.w = true;
+        p.bg_shift_pattern_lo = 0x1234;
+        p.bg_shift_pattern_hi = 0x5678;
+        p.bg_shift_attrib_lo = 0x9ABC;
+        p.bg_shift_attrib_hi = 0xDEF0;
+        p.bg_next_tile_id = 0x11;
+        p.bg_next_tile_attrib = 0x22;
+        p.bg_next_tile_lsb = 0x33;
+        p.bg_next_tile_msb = 0x44;
+        for (i, b) in p.secondary_oam.iter_mut().enumerate() {
+            *b = 0x80 | i as u8;
+        }
+        p.oam_copy_buffer = 0x66;
+        p.eval_n = 12;
+        p.eval_m = 2;
+        p.eval_sec_addr = 20;
+        p.eval_in_range = true;
+        p.eval_done = true;
+        p.eval_overflow_reads = 3;
+        p.eval_first = true;
+        p.sprite_zero_next = true;
+        p.sprite_count = 6;
+        p.sprite_zero_in_units = true;
+        for (i, s) in p.sprite_patterns.iter_mut().enumerate() {
+            *s = (i as u8, 0xF0 | i as u8);
+        }
+        p.sprite_positions = [10, 20, 30, 40, 50, 60, 70, 80];
+        p.sprite_attributes = [1, 2, 3, 4, 5, 6, 7, 8];
+        p
+    }
+
+    fn image(p: &Ppu) -> Vec<u8> {
+        let mut w = Writer::new();
+        p.save(&mut w);
+        w.into_bytes()
+    }
+
+    #[test]
+    fn ppu_round_trips_every_field() {
+        let original = busy_ppu();
+        let bytes = image(&original);
+        let mut restored = Ppu::new();
+        let mut r = Reader::new(&bytes);
+        restored.load(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0, "load consumed the whole image");
+        assert_eq!(image(&restored), bytes);
+        assert_eq!(restored.v, 0x2C1F);
+        assert_eq!(restored.scanline, 123);
+        assert_eq!(restored.sprite_patterns[7], (7, 0xF7));
+        assert_eq!(restored.io_bus_stamp[7], 8);
+        assert!(restored.nmi_interrupt && restored.suppress_vbl);
+    }
+
+    #[test]
+    fn ppu_truncated_image_is_refused() {
+        let bytes = image(&busy_ppu());
+        let mut restored = Ppu::new();
+        let cut = &bytes[..bytes.len() - 1];
+        assert_eq!(
+            restored.load(&mut Reader::new(cut)),
+            Err(crate::state::StateError::Truncated)
+        );
+    }
+}

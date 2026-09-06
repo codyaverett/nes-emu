@@ -89,6 +89,24 @@ impl Mapper for Mapper65 {
         Some(&self.prg_ram)
     }
 
+    // State: mirroring u8, prg_banks 3 x u8, chr_banks 8 x u8, PRG RAM
+    // 8 KB, CHR.
+    fn save_state(&self, w: &mut crate::state::Writer) {
+        w.u8(super::mapper::mirroring_to_u8(self.mirroring));
+        w.bytes(&self.prg_banks);
+        w.bytes(&self.chr_banks);
+        w.bytes(&self.prg_ram);
+        self.chr.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.mirroring = super::mapper::mirroring_from_u8(r.u8()?)?;
+        r.bytes(&mut self.prg_banks)?;
+        r.bytes(&mut self.chr_banks)?;
+        r.bytes(&mut self.prg_ram)?;
+        self.chr.load_state(r)
+    }
+
     fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
         Some(&mut self.prg_ram)
     }
@@ -133,5 +151,39 @@ mod tests {
         assert_eq!(m.ppu_read(0x0C00), 20);
         assert_eq!(m.ppu_read(0x0FFF), 20);
         assert_eq!(m.ppu_read(0x1000), 4);
+    }
+
+    #[test]
+    fn save_state_round_trips_prg_and_chr_registers() {
+        use crate::state::{Reader, Writer};
+        let mut m = Mapper65::new(
+            tagged_rom(8, 0x2000),
+            tagged_rom(32, 0x400),
+            Mirroring::Vertical,
+        );
+        m.cpu_write(0x8000, 3);
+        m.cpu_write(0xA000, 5);
+        m.cpu_write(0xC000, 6);
+        m.cpu_write(0xB003, 20);
+        m.cpu_write(0xB007, 31);
+        m.cpu_write(0x6000, 0x77);
+        let mut w = Writer::new();
+        m.save_state(&mut w);
+        let bytes = w.into_bytes();
+
+        m.cpu_write(0x8000, 1);
+        m.cpu_write(0xB003, 1);
+        let mut r = Reader::new(&bytes);
+        m.load_state(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(m.cpu_read(0x8000), 3);
+        assert_eq!(m.cpu_read(0xA000), 5);
+        assert_eq!(m.cpu_read(0xC000), 6);
+        assert_eq!(m.ppu_read(0x0C00), 20);
+        assert_eq!(m.ppu_read(0x1C00), 31);
+        assert_eq!(m.cpu_read(0x6000), 0x77);
+        let mut again = Writer::new();
+        m.save_state(&mut again);
+        assert_eq!(again.into_bytes(), bytes);
     }
 }

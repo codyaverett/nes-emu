@@ -346,6 +346,8 @@ two page screenshots; the file afterwards reads `075A:02<TAB>1<TAB>lives`.
 | R | Reset |
 | M | Mute / unmute |
 | Plus / Minus | Volume up / down |
+| F5 / F8 | Save / load the current save-state slot (docs/debugging/SAVE_STATES.md) |
+| F6 / F7 | Previous / next save-state slot |
 | Z / X | A / B |
 | Right Shift | Select |
 | Return | Start |
@@ -359,11 +361,14 @@ close.
 Inside PPU: Left/Right (Tab) switch view, Up/Down or 0-7 pick the
 pattern palette; Escape or Q close.
 Inside APU: 1-5 toggle a channel, U unmutes all; Escape or Q close.
+Inside States: Up/Down or 1-9 pick a slot, Return loads, S saves;
+Escape or Q close (issue #39, docs/debugging/SAVE_STATES.md).
 
 Built-in commands: pause, resume, frame advance, reset, mute, volume up,
 volume down, toggle overscan crop, help, quit, cheats, cheat add CODE,
 cheat toggle N, cheat clear, mem [ADDR], ppu, apu, mute pulse1, mute
-pulse2, mute triangle, mute noise, mute dmc, unmute all.
+pulse2, mute triangle, mute noise, mute dmc, unmute all, save state [N],
+load state [N], slot [N], states.
 
 ## Debug flags
 

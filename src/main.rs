@@ -106,6 +106,7 @@ fn usage(program: &str) -> ! {
     eprintln!("Without one, the bundled cheats/ directory is searched by ROM CRC-32");
     eprintln!("(override with --cheats-dir PATH); the match is copied next to the ROM.");
     eprintln!("Backquote opens the command palette; F1 opens the help page.");
+    eprintln!("Save states: F5 saves, F8 loads, F6/F7 change the slot (<rom_file>.s1 .. .s9).");
     eprintln!("--screenshot PATH:N writes the window as binary PPM after N presented frames.");
     eprintln!(
         "--ui-script KEYS injects comma-separated SDL key names, one per frame from frame 30."
@@ -198,11 +199,32 @@ fn key_down(key: Keycode, app: &mut App, ui: &mut Ui) {
         Keycode::M => app.toggle_mute(),
         Keycode::Equals | Keycode::Plus => app.volume_up(),
         Keycode::Minus => app.volume_down(),
+        // Save states (docs/debugging/SAVE_STATES.md).
+        Keycode::F5 => app.save_state(),
+        Keycode::F6 => app.prev_slot(),
+        Keycode::F7 => app.next_slot(),
+        Keycode::F8 => app.load_state(),
         _ => {}
     }
     if let Some(button) = map_keycode_to_button(key) {
         app.system.controller1.press(button);
     }
+}
+
+/// One line of text over the bottom of the picture ("Saved slot 3").
+fn draw_message(canvas: &mut WindowCanvas, font_scale: u32, text: &str) -> Result<()> {
+    let (w, h) = canvas
+        .output_size()
+        .map_err(|e| anyhow::anyhow!("output size: {}", e))?;
+    let pad = 4 * font_scale as i32;
+    let line = ui::font::line_height(font_scale) as i32;
+    let y = h as i32 - line - 3 * pad;
+    canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
+    canvas
+        .fill_rect(Rect::new(0, y - pad, w, (line + 2 * pad) as u32))
+        .map_err(|e| anyhow::anyhow!("Failed to draw message background: {}", e))?;
+    ui::font::draw_text(canvas, pad, y, font_scale, Color::RGB(255, 255, 255), text)
+        .map_err(|e| anyhow::anyhow!("Failed to draw message: {}", e))
 }
 
 /// Releases reach the controller in every UI mode so a button held when
@@ -390,8 +412,7 @@ fn main() -> Result<()> {
         muted,
         volume,
         !options.full_frame,
-        save_path,
-        cheat_path,
+        PathBuf::from(rom_path),
     );
     let mut ui = Ui::new(ui::DEFAULT_FONT_SCALE);
 
@@ -526,6 +547,13 @@ fn main() -> Result<()> {
             } else {
                 app.osd_until = None;
             }
+        }
+
+        // Save-state and slot messages, in every mode.
+        if let Some(text) = app.osd_message().map(str::to_owned) {
+            draw_message(&mut canvas, ui.font_scale, &text)?;
+        } else {
+            app.osd_text = None;
         }
 
         ui.draw(&mut canvas, &app)

@@ -339,6 +339,76 @@ impl Mapper for Mapper5 {
         Some(&self.prg_ram)
     }
 
+    // State, in struct order: exram 1 KB, exram_mode u8, prg_mode u8,
+    // prg_banks 5 x u8, prg_ram_protect 2 x u8, chr_mode u8, chr_banks
+    // 12 x u16, upper_chr_bank_bits u8, nametable_mapping 4 x u8,
+    // fill_mode_tile u8, fill_mode_attr u8, vsplit_enabled bool,
+    // vsplit_side bool, vsplit_tile u8, vsplit_scroll u8, vsplit_bank u8,
+    // irq_scanline u8, irq_enabled bool, irq_pending bool, irq_in_frame
+    // bool, scanline_counter u8, ppu_is_rendering bool, multiplicand_a u8,
+    // multiplicand_b u8, PRG RAM 8 KB, CHR.
+    fn save_state(&self, w: &mut crate::state::Writer) {
+        w.bytes(&self.exram);
+        w.u8(self.exram_mode);
+        w.u8(self.prg_mode);
+        w.bytes(&self.prg_banks);
+        w.bytes(&self.prg_ram_protect);
+        w.u8(self.chr_mode);
+        for bank in &self.chr_banks {
+            w.u16(*bank);
+        }
+        w.u8(self.upper_chr_bank_bits);
+        w.bytes(&self.nametable_mapping);
+        w.u8(self.fill_mode_tile);
+        w.u8(self.fill_mode_attr);
+        w.bool(self.vsplit_enabled);
+        w.bool(self.vsplit_side);
+        w.u8(self.vsplit_tile);
+        w.u8(self.vsplit_scroll);
+        w.u8(self.vsplit_bank);
+        w.u8(self.irq_scanline);
+        w.bool(self.irq_enabled);
+        w.bool(self.irq_pending);
+        w.bool(self.irq_in_frame);
+        w.u8(self.scanline_counter);
+        w.bool(self.ppu_is_rendering);
+        w.u8(self.multiplicand_a);
+        w.u8(self.multiplicand_b);
+        w.bytes(&self.prg_ram);
+        self.chr.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        r.bytes(&mut self.exram)?;
+        self.exram_mode = r.u8()?;
+        self.prg_mode = r.u8()?;
+        r.bytes(&mut self.prg_banks)?;
+        r.bytes(&mut self.prg_ram_protect)?;
+        self.chr_mode = r.u8()?;
+        for bank in self.chr_banks.iter_mut() {
+            *bank = r.u16()?;
+        }
+        self.upper_chr_bank_bits = r.u8()?;
+        r.bytes(&mut self.nametable_mapping)?;
+        self.fill_mode_tile = r.u8()?;
+        self.fill_mode_attr = r.u8()?;
+        self.vsplit_enabled = r.bool()?;
+        self.vsplit_side = r.bool()?;
+        self.vsplit_tile = r.u8()?;
+        self.vsplit_scroll = r.u8()?;
+        self.vsplit_bank = r.u8()?;
+        self.irq_scanline = r.u8()?;
+        self.irq_enabled = r.bool()?;
+        self.irq_pending = r.bool()?;
+        self.irq_in_frame = r.bool()?;
+        self.scanline_counter = r.u8()?;
+        self.ppu_is_rendering = r.bool()?;
+        self.multiplicand_a = r.u8()?;
+        self.multiplicand_b = r.u8()?;
+        r.bytes(&mut self.prg_ram)?;
+        self.chr.load_state(r)
+    }
+
     fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
         Some(&mut self.prg_ram)
     }
@@ -439,5 +509,66 @@ mod tests {
         }
         assert_eq!(m.ppu_peek(0x0000), 9);
         assert_eq!(m.ppu_peek(0x1C00), 4);
+    }
+
+    #[test]
+    fn save_state_round_trips_registers_exram_and_irq() {
+        use crate::state::{Reader, Writer};
+        let mut m = Mapper5::new(
+            tagged_rom(16, 0x2000),
+            tagged_rom(32, 0x400),
+            Mirroring::Vertical,
+        );
+        m.cpu_write(0x5100, 3);
+        m.cpu_write(0x5101, 3);
+        for (i, addr) in (0x5114..=0x5117).enumerate() {
+            m.cpu_write(addr, 0x80 | (i as u8 + 3));
+        }
+        for (i, addr) in (0x5120..=0x512B).enumerate() {
+            m.cpu_write(addr, 20 + i as u8);
+        }
+        m.cpu_write(0x5105, 0x44);
+        m.cpu_write(0x5C10, 0xEE);
+        m.cpu_write(0x5203, 100);
+        m.cpu_write(0x5204, 0x80);
+        m.cpu_write(0x5205, 12);
+        m.cpu_write(0x5206, 10);
+        m.cpu_write(0x6100, 0x33);
+        for _ in 0..40 {
+            m.clock_scanline();
+        }
+        let mut w = Writer::new();
+        m.save_state(&mut w);
+        let bytes = w.into_bytes();
+        let snapshot = |m: &mut Mapper5| {
+            let mut v = Vec::new();
+            for addr in (0x8000..=0xFFFF).step_by(0x2000) {
+                v.push(m.cpu_read(addr));
+            }
+            for addr in (0x0000..0x2000).step_by(0x400) {
+                v.push(m.ppu_read(addr));
+            }
+            v.push(m.cpu_read(0x5C10));
+            v.push(m.cpu_read(0x5205));
+            v
+        };
+        let before = snapshot(&mut m);
+
+        m.cpu_write(0x5100, 0);
+        m.cpu_write(0x5117, 0x81);
+        m.cpu_write(0x5101, 0);
+        m.cpu_write(0x5127, 1);
+        m.cpu_write(0x5C10, 0);
+        m.cpu_write(0x5205, 1);
+        assert_ne!(snapshot(&mut m), before);
+
+        let mut r = Reader::new(&bytes);
+        m.load_state(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(snapshot(&mut m), before);
+        assert_eq!(m.cpu_read(0x6100), 0x33);
+        let mut again = Writer::new();
+        m.save_state(&mut again);
+        assert_eq!(again.into_bytes(), bytes);
     }
 }

@@ -143,3 +143,53 @@ impl Controller {
         self.buttons.contains(button)
     }
 }
+
+// ----------------------------------------------------------------------
+// Save states (docs/debugging/SAVE_STATES.md). Section "INPT" holds one
+// controller after the other, each as: buttons u8, strobe bool, index u8.
+// ----------------------------------------------------------------------
+
+impl crate::state::Snapshot for Controller {
+    fn save(&self, w: &mut crate::state::Writer) {
+        w.u8(self.buttons.bits());
+        w.bool(self.strobe);
+        w.u8(self.index);
+    }
+
+    fn load(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.buttons = ControllerButton::from_bits_retain(r.u8()?);
+        self.strobe = r.bool()?;
+        self.index = r.u8()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use crate::state::{Reader, Snapshot, Writer};
+
+    #[test]
+    fn controller_round_trips_mid_read() {
+        let mut c = Controller::new();
+        c.press(ControllerButton::A);
+        c.press(ControllerButton::START);
+        c.write(1);
+        c.write(0);
+        c.read();
+        c.read();
+        let mut w = Writer::new();
+        c.save(&mut w);
+        let bytes = w.into_bytes();
+        assert_eq!(bytes, vec![0x90, 0, 2]);
+
+        let mut restored = Controller::new();
+        restored.load(&mut Reader::new(&bytes)).unwrap();
+        // Third read is Select (not pressed), fourth is Start (pressed).
+        assert_eq!(restored.read(), 0);
+        assert_eq!(restored.read(), 1);
+        let mut again = Writer::new();
+        c.save(&mut again);
+        assert_eq!(again.into_bytes(), bytes);
+    }
+}

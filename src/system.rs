@@ -3,6 +3,7 @@ use crate::cartridge::{Cartridge, Mapper, NullMapper};
 use crate::cheat::CheatSet;
 use crate::input::Controller;
 use crate::ppu::Ppu;
+use crate::state::{self, Snapshot, StateError};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -3472,6 +3473,170 @@ impl System {
         std::fs::write(path, self.cheats.to_string())?;
         log::info!("Wrote {} cheat(s) to {}", self.cheats.len(), path.display());
         Ok(true)
+    }
+
+    // ------------------------------------------------------------------
+    // Save states (docs/debugging/SAVE_STATES.md).
+    // ------------------------------------------------------------------
+
+    /// Snapshot the whole machine as a state image. Meant to be called
+    /// between frames (after `run_frame` returns); the frame buffer is
+    /// not included, the next frame redraws it. Cheats and the battery
+    /// dirty hash are not part of the state.
+    pub fn save_state(&self) -> Vec<u8> {
+        let crc = self.cartridge.as_ref().map(|c| c.rom_crc32).unwrap_or(0);
+        let mut w = state::header(crc);
+        w.section(state::TAG_CPU, |w| self.save_cpu(w));
+        w.section(state::TAG_RAM, |w| w.bytes(&self.cpu_ram));
+        w.section(state::TAG_PPU, |w| self.ppu.save(w));
+        w.section(state::TAG_APU, |w| self.apu.save(w));
+        w.section(state::TAG_MAPPER, |w| {
+            if let Some(cart) = &self.cartridge {
+                cart.mapper.save_state(w);
+            }
+        });
+        w.section(state::TAG_INPUT, |w| {
+            self.controller1.save(w);
+            self.controller2.save(w);
+        });
+        w.into_bytes()
+    }
+
+    /// Restore a state image produced by `save_state` for the loaded ROM.
+    ///
+    /// The header and every section header are validated before anything
+    /// is touched, so a truncated file, a bad magic or a state for another
+    /// ROM (CRC-32 mismatch) leaves the machine as it was. Unknown
+    /// sections are skipped. A layout error inside a known section (a file
+    /// from an incompatible build) is reported after the sections before
+    /// it were applied; reset or load another state in that case.
+    ///
+    /// The pending audio output is dropped and audio capture is left off,
+    /// so the caller's audio-clocked frame loop starts clean.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), StateError> {
+        let image = state::parse(data)?;
+        let crc = self
+            .cartridge
+            .as_ref()
+            .map(|c| c.rom_crc32)
+            .ok_or(StateError::NoCartridge)?;
+        if image.rom_crc32 != crc {
+            return Err(StateError::RomMismatch {
+                expected: crc,
+                found: image.rom_crc32,
+            });
+        }
+        for required in state::REQUIRED_TAGS {
+            if !image.sections.iter().any(|(tag, _)| tag == required) {
+                return Err(StateError::MissingSection(state::tag_name(required)));
+            }
+        }
+
+        for (tag, payload) in &image.sections {
+            let mut r = state::Reader::new(payload);
+            match tag {
+                t if t == state::TAG_CPU => self.load_cpu(&mut r)?,
+                t if t == state::TAG_RAM => r.bytes(&mut self.cpu_ram)?,
+                t if t == state::TAG_PPU => self.ppu.load(&mut r)?,
+                t if t == state::TAG_APU => self.apu.load(&mut r)?,
+                t if t == state::TAG_MAPPER => {
+                    if let Some(cart) = self.cartridge.as_mut() {
+                        cart.mapper.load_state(&mut r)?;
+                    }
+                }
+                t if t == state::TAG_INPUT => {
+                    self.controller1.load(&mut r)?;
+                    self.controller2.load(&mut r)?;
+                }
+                other => {
+                    log::debug!(
+                        "Skipping unknown save-state section {:?} ({} bytes)",
+                        state::tag_name(other),
+                        payload.len()
+                    );
+                    continue;
+                }
+            }
+            r.finish(tag)?;
+        }
+
+        self.audio_out.clear();
+        self.audio_capture = false;
+        Ok(())
+    }
+
+    /// "CPU " section: registers, cycle counters, the per-instruction
+    /// bookkeeping, DMC DMA request, interrupt sampling state and the
+    /// audio sample/filter state, in this order.
+    fn save_cpu(&self, w: &mut state::Writer) {
+        w.u8(self.cpu_a);
+        w.u8(self.cpu_x);
+        w.u8(self.cpu_y);
+        w.u8(self.cpu_sp);
+        w.u16(self.cpu_pc);
+        w.u8(self.cpu_status);
+        w.u64(self.total_cycles);
+        w.u16(self.instr_cycles);
+        w.u16(self.dma_cycles);
+        w.bool(self.dmc_dma.is_some());
+        let dma = self.dmc_dma.unwrap_or(DmcDma {
+            attempt: 0,
+            halted_at: None,
+        });
+        w.u64(dma.attempt);
+        w.opt_u64(dma.halted_at);
+        w.bool(self.padding_is_write);
+        w.u16(self.dmc_stall.0);
+        w.u16(self.dmc_stall.1);
+        w.bool(self.nmi_pending);
+        w.u16(self.nmi_seen_tick);
+        w.u16(self.irq_hist);
+        w.u16(self.poll_tick);
+        w.bool(self.no_poll);
+        w.opt_bool(self.i_flag_for_poll);
+        w.bool(self.sampled_nmi);
+        w.bool(self.sampled_irq);
+        w.bool(self.mapper_irq);
+        w.f64(self.audio_sample_counter);
+        for (prev_in, prev_out) in &self.audio_hp {
+            w.f32(*prev_in);
+            w.f32(*prev_out);
+        }
+        w.f32(self.audio_acc.0);
+        w.u32(self.audio_acc.1);
+    }
+
+    fn load_cpu(&mut self, r: &mut state::Reader) -> Result<(), StateError> {
+        self.cpu_a = r.u8()?;
+        self.cpu_x = r.u8()?;
+        self.cpu_y = r.u8()?;
+        self.cpu_sp = r.u8()?;
+        self.cpu_pc = r.u16()?;
+        self.cpu_status = r.u8()?;
+        self.total_cycles = r.u64()?;
+        self.instr_cycles = r.u16()?;
+        self.dma_cycles = r.u16()?;
+        let has_dma = r.bool()?;
+        let attempt = r.u64()?;
+        let halted_at = r.opt_u64()?;
+        self.dmc_dma = has_dma.then_some(DmcDma { attempt, halted_at });
+        self.padding_is_write = r.bool()?;
+        self.dmc_stall = (r.u16()?, r.u16()?);
+        self.nmi_pending = r.bool()?;
+        self.nmi_seen_tick = r.u16()?;
+        self.irq_hist = r.u16()?;
+        self.poll_tick = r.u16()?;
+        self.no_poll = r.bool()?;
+        self.i_flag_for_poll = r.opt_bool()?;
+        self.sampled_nmi = r.bool()?;
+        self.sampled_irq = r.bool()?;
+        self.mapper_irq = r.bool()?;
+        self.audio_sample_counter = r.f64()?;
+        for hp in self.audio_hp.iter_mut() {
+            *hp = (r.f32()?, r.f32()?);
+        }
+        self.audio_acc = (r.f32()?, r.u32()?);
+        Ok(())
     }
 
     pub fn set_pc(&mut self, pc: u16) {

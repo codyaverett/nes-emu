@@ -167,6 +167,30 @@ impl Mapper for Mapper1 {
         Some(&self.prg_ram)
     }
 
+    // State: shift_register u8, shift_count u8, control u8, chr_bank_0 u8,
+    // chr_bank_1 u8, prg_bank u8, PRG RAM 8 KB, CHR.
+    fn save_state(&self, w: &mut crate::state::Writer) {
+        w.u8(self.shift_register);
+        w.u8(self.shift_count);
+        w.u8(self.control);
+        w.u8(self.chr_bank_0);
+        w.u8(self.chr_bank_1);
+        w.u8(self.prg_bank);
+        w.bytes(&self.prg_ram);
+        self.chr.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut crate::state::Reader) -> Result<(), crate::state::StateError> {
+        self.shift_register = r.u8()?;
+        self.shift_count = r.u8()?;
+        self.control = r.u8()?;
+        self.chr_bank_0 = r.u8()?;
+        self.chr_bank_1 = r.u8()?;
+        self.prg_bank = r.u8()?;
+        r.bytes(&mut self.prg_ram)?;
+        self.chr.load_state(r)
+    }
+
     fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
         Some(&mut self.prg_ram)
     }
@@ -310,5 +334,55 @@ mod tests {
         }
         assert_eq!(m.ppu_peek(0x0000), 5);
         assert_eq!(m.ppu_peek(0x1000), 2);
+    }
+
+    /// Serial write of a 5-bit value to an MMC1 register.
+    fn write_serial(m: &mut Mapper1, addr: u16, value: u8) {
+        for i in 0..5 {
+            m.cpu_write(addr, (value >> i) & 1);
+        }
+    }
+
+    #[test]
+    fn save_state_round_trips_registers_and_a_partial_shift() {
+        use crate::state::{Reader, Writer};
+        let mut m = Mapper1::new(
+            tagged_rom(8, 0x4000),
+            tagged_rom(8, 0x1000),
+            Mirroring::Vertical,
+        );
+        // Control: 4 KB CHR mode, PRG mode 3 (switchable at $8000).
+        write_serial(&mut m, 0x8000, 0x1C | 0x02);
+        write_serial(&mut m, 0xA000, 5);
+        write_serial(&mut m, 0xC000, 2);
+        write_serial(&mut m, 0xE000, 3);
+        m.cpu_write(0x6001, 0xAB);
+        // Two bits of a new PRG bank in flight.
+        m.cpu_write(0xE000, 1);
+        m.cpu_write(0xE000, 0);
+        let mut w = Writer::new();
+        m.save_state(&mut w);
+        let bytes = w.into_bytes();
+
+        // Disturb everything, including finishing the shift with other bits.
+        m.cpu_write(0x8000, 0x80);
+        write_serial(&mut m, 0xE000, 6);
+        write_serial(&mut m, 0xA000, 1);
+        assert_eq!(m.cpu_read(0x8000), 6);
+        let mut r = Reader::new(&bytes);
+        m.load_state(&mut r).unwrap();
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(m.cpu_read(0x8000), 3);
+        assert_eq!(m.cpu_read(0xC000), 7);
+        assert_eq!(m.ppu_read(0x0000), 5);
+        assert_eq!(m.ppu_read(0x1000), 2);
+        assert_eq!(m.cpu_read(0x6001), 0xAB);
+        assert_eq!(m.mirroring(), Mirroring::Vertical);
+        // Finish the in-flight shift: bits 1,0 already written, then 1,0,0
+        // gives 0b00101 = 5.
+        m.cpu_write(0xE000, 1);
+        m.cpu_write(0xE000, 0);
+        m.cpu_write(0xE000, 0);
+        assert_eq!(m.cpu_read(0x8000), 5);
     }
 }

@@ -9,6 +9,8 @@ pub mod cheats;
 pub mod apu;
 pub mod memory;
 pub mod ppu;
+// Save states (issue #39).
+pub mod states;
 
 use super::tool::Tool;
 
@@ -21,6 +23,8 @@ pub enum ToolId {
     Memory,
     Ppu,
     Apu,
+    // Save states (issue #39).
+    States,
 }
 
 impl ToolId {
@@ -33,6 +37,8 @@ impl ToolId {
             ToolId::Memory => Box::new(memory::Memory::default()),
             ToolId::Ppu => Box::new(ppu::PpuView::default()),
             ToolId::Apu => Box::new(apu::ApuView),
+            // Save states (issue #39).
+            ToolId::States => Box::new(states::States::default()),
         }
     }
 }
