@@ -4,7 +4,8 @@
 **Type:** Feature / Binary UI
 **Status:** Complete; feel of the palette and key conflicts need a human
 **Tracking:** GitHub issue #30 (phase 1 of `docs/plans/TOOLS_AND_CHEATS.md`);
-argument commands and the Cheats page are issue #32 (phase 3)
+argument commands and the Cheats page are issue #32 (phase 3); issue #33
+added the Memory, PPU and APU pages
 
 ## Executive Summary
 
@@ -34,6 +35,9 @@ src/ui/tool.rs         Tool trait, ToolEvent, page chrome helpers
 src/ui/tools/mod.rs    ToolId enum and ToolId::open
 src/ui/tools/help.rs   Help page: key bindings and every command
 src/ui/tools/cheats.rs Cheats page: list, toggle, add, delete, edit
+src/ui/tools/memory.rs Memory page: hex dump of CPU space (issue 33)
+src/ui/tools/ppu.rs    PPU page: pattern tables, nametables, palettes
+src/ui/tools/apu.rs    APU page: per-channel mute state
 ```
 
 ### Key routing
@@ -119,10 +123,121 @@ while the tool is open, paused or not.
 Add a line to `builtin_commands`: `Command::run("name", "description",
 App::method)` for an immediate action, or `Command::tool` to open a page.
 `Action::Run` takes a plain `fn(&mut App)`, so the action is usually a
-method on `App`; add one there if the state it needs is not exposed yet.
-Keep the name at most 22 characters and the description at most 21, or
-the palette clips it at the default window size (a unit test checks the
-built-ins).
+method on `App` (a non-capturing closure such as
+`|app| app.mute_channel(0)` coerces to one too); add a method there if
+the state it needs is not exposed yet. Keep the name at most 22
+characters and the description at most 21, or the palette clips it at
+the default window size (a unit test checks the built-ins).
+
+### Commands with an argument
+
+`Command::with_arg("mem", "Hex dump; mem ADDR", App::goto_memory)` makes
+an `Action::RunWithArg(fn(&mut App, &str))`. Such a command matches the
+palette input in two ways: the usual subsequence match on its name, and
+a prefix match when the input is the name followed by whitespace and
+the argument (`commands::argument` returns `Some("300")` for `mem 300`,
+`Some("")` for `mem`, `None` for `memory`). On Enter the palette passes
+the trimmed argument through `PaletteEvent::Run(index, arg)` to
+`Ui::run_command`, which calls the function with it.
+
+The function only sees `App`, and only `Ui` can open a page, so a command
+that wants to end on a tool sets `app.pending_tool = Some(ToolId::...)`;
+`run_command` takes it after any action and opens that page. That is how
+`mem ADDR` sets `App::memory_addr` and then opens Memory.
+
+The palette maps key codes to characters and ignores Shift, so an
+argument cannot contain `$`; hex addresses are typed bare or with `0x`
+(`App::parse_hex_address` also accepts `$` for callers that build the
+string themselves).
+
+## Example pages (issue 33)
+
+Three pages exercise the framework and give the palette something to
+do. Each reads the emulator state live on every draw, so they follow
+the game while it runs (and hold still while paused). All three close on
+Escape or Q.
+
+### Memory
+
+`mem` opens a hex dump of CPU space; `mem ADDR` opens it at a hex
+address (`mem 300`, `mem 0xc000`; the row is aligned to 16 bytes). Rows
+are `System::peek`: sixteen bytes with a gap after eight and an ASCII
+column, `.` for anything outside 0x20-0x7E. `peek` refuses to touch the
+register range, so rows in `$2000-$5FFF` read as zero and are drawn
+dimmed. The header shows the address range on screen. Up/Down move a
+row, PageUp/PageDown a page, Home and End go to `$0000` and the last
+full page; the first address lives in `App::memory_addr` and survives
+closing the page.
+
+A row is 72 characters, more than the 44 columns the window offers at
+the UI font scale, so the dump is drawn at `font_scale / 2` (8 px
+glyphs on the default window, 60 rows = 960 bytes per page) while the
+header keeps the normal size. The page size is remembered from the last
+draw in a `Cell` so the paging keys know it.
+
+![Memory page](../testing/test_output/ui/memory.png)
+
+### PPU
+
+`ppu` opens a page with three views; Left/Right (or Tab) switch between
+them and the header shows which is active.
+
+- Patterns: both pattern tables at 2x (128x128 tiles each), read through
+  `System::peek_chr` so CHR bank switching shows immediately, coloured
+  with one of the eight palettes: Up/Down cycle, 0-7 pick directly. The
+  info line shows which table PPUCTRL currently assigns to the
+  background and to sprites, and the sprite size.
+- Nametables: the four nametables as a 2x2 grid at half scale (each 8x8
+  tile becomes 4x4 by sampling every other pixel), resolved through the
+  cartridge's current mirroring (`$2400 -> 1` means the second logical
+  table is physical table 1), coloured through the attribute bytes and
+  drawn from the background pattern table PPUCTRL selects. Mirroring
+  reads `cartridge.mapper.mirroring()`; the view re-derives the
+  logical-to-physical table mapping since the PPU's own helper is
+  private.
+- Palettes: the 32 palette RAM entries as swatches with their hex value,
+  four background rows and four sprite rows. Entry 0 of BG1-BG3 shows
+  the universal background colour, as the PPU renders it.
+
+Everything is built into a small RGB image and drawn as horizontal runs
+of one colour with `fill_rect`, which is a few thousand rectangles per
+frame: slow by rendering standards, far under a frame in practice.
+
+![Pattern tables](../testing/test_output/ui/ppu_patterns.png)
+![Nametables](../testing/test_output/ui/ppu_nametables.png)
+![Palettes](../testing/test_output/ui/ppu_palettes.png)
+
+### APU
+
+`apu` lists the five mixer channels (pulse1, pulse2, triangle, noise,
+dmc) with `playing` or `muted`; keys 1-5 toggle one, U unmutes all. The
+state is the library's per-channel mute flags, so the palette commands
+`mute pulse1` .. `mute dmc` and `unmute all` change what the page shows.
+Master mute (M) is shown separately and is the existing audio-callback
+flag, not an APU state.
+
+![APU page](../testing/test_output/ui/apu.png)
+
+### Library accessors added for the pages
+
+The emulator library stays UI-free; the pages needed three small,
+read-only additions:
+
+- `Mapper::ppu_peek(&self, addr) -> u8`, a default trait method (open
+  bus) overridden by every mapper with a copy of its `ppu_read` body:
+  the same CHR byte through the current banking, without clocking
+  anything. `System::peek_chr(addr)` calls it for `addr & 0x1FFF` and
+  returns 0 with no cartridge. Tests check `ppu_peek == ppu_read` after
+  bank switches on mappers 1, 3, 4 and 5, CHR RAM writes on mapper 0,
+  and that `peek_chr` leaves `ppu.scanline`/`ppu.cycle` untouched.
+- `Apu::set_channel_muted(ch, muted)` / `Apu::channel_muted(ch)`, indexed
+  like `apu::CHANNEL_NAMES` (`CHANNEL_COUNT` is 5). The flags gate the
+  channel's level inside `get_output` only, so the channel keeps
+  running and unmuting is seamless; out-of-range indices are ignored.
+  Tests check that muting pulse 1 silences the mix while its own output
+  is unchanged, and that muting another channel does not.
+- `ppu::NES_PALETTE` is now `pub` so the binary can turn palette RAM
+  entries into RGB without a second copy of the 64 colours.
 
 ## Argument commands
 
@@ -239,10 +354,16 @@ two page screenshots; the file afterwards reads `075A:02<TAB>1<TAB>lives`.
 Inside the palette: type to filter, Backspace, Up/Down, Enter, Escape.
 Inside Help: Up/Down/PageUp/PageDown/Home scroll; Escape, Q or Return
 close. Inside Cheats: see the table above.
+Inside Memory: Up/Down row, PageUp/PageDown page, Home/End; Escape or Q
+close.
+Inside PPU: Left/Right (Tab) switch view, Up/Down or 0-7 pick the
+pattern palette; Escape or Q close.
+Inside APU: 1-5 toggle a channel, U unmutes all; Escape or Q close.
 
 Built-in commands: pause, resume, frame advance, reset, mute, volume up,
 volume down, toggle overscan crop, help, quit, cheats, cheat add CODE,
-cheat toggle N, cheat clear.
+cheat toggle N, cheat clear, mem [ADDR], ppu, apu, mute pulse1, mute
+pulse2, mute triangle, mute noise, mute dmc, unmute all.
 
 ## Debug flags
 
@@ -281,6 +402,25 @@ quit, so the run ends by itself. Convert PPM to PNG with the stdlib
 Python recipe in `docs/testing/COMPATIBILITY_SWEEP.md`, reading the size
 from the header instead of assuming 256x240.
 
+The issue 33 pages were captured from `roms/mario.nes` the same way,
+with 90 empty entries first so the title screen is up, then:
+
+```
+backquote,m,e,m,Space,3,0,0,Return     memory.png at +4, PageDown,
+                                       memory_page2.png at +4, Escape
+backquote,p,p,u,Return                 ppu_patterns.png at +4
+Right                                  ppu_nametables.png at +4
+Right                                  ppu_palettes.png at +4, Escape
+backquote,a,p,u,Return,2,5             apu.png at +4 (pulse2, dmc muted)
+Escape,backquote,u,n,m,u,t,e,Return    unmute all
+backquote,a,p,u,Return                 apu_unmuted.png at +4
+Escape,Escape                          close, quit
+```
+
+`+4` is the frame number of the last key plus four (two frames for the
+page to draw, captured on the third). The key names are SDL names:
+`Space`, `PageDown`, `Right`, digits as `2`.
+
 ## Verification
 
 - `cargo test`: unit tests for the font table (95 glyphs, MSB-leftmost
@@ -289,6 +429,15 @@ from the header instead of assuming 256x240.
   selection clamping, Enter/Escape). None open a window.
 - Screenshots: `docs/testing/test_output/ui/palette.png` (palette with
   `vol` typed) and `docs/testing/test_output/ui/help.png` (Help page).
+- Issue 33: unit tests for `commands::argument` and the prefix filter,
+  the palette passing `mem c000` through, `parse_hex_address`, the
+  memory row format and last-page clamp, the PPU view cycle, the
+  mirroring table map and pattern/palette lookups against a synthetic
+  CHR RAM cartridge, and the APU digit-key map. Screenshots
+  `memory.png`, `memory_page2.png`, `ppu_patterns.png`,
+  `ppu_nametables.png`, `ppu_palettes.png`, `apu.png` and
+  `apu_unmuted.png` in the same directory, all taken while
+  `roms/mario.nes` sat on its title screen.
 - The scripted run above exercises open, filter, run (help), close and
   quit end to end, and the emulator exits through the normal path so the
   battery flush runs.
@@ -332,9 +481,24 @@ Cheats page (issue #32):
 5. Key releases reach the controller in every mode, so the Return that
    confirms an entry logs a `START released` with nothing pressed. This
    was already the case for Enter in the palette and is harmless.
+Issue 33 pages:
+
+3. The PPU page's tab line `[Patterns]  Nametables   Palettes   Left/Right`
+   was 46 columns and the first screenshot showed `Left/Righ`. The
+   inactive tabs lost their padding spaces (42 columns now).
+4. A 16-byte hex row with ASCII is 72 columns, impossible at the UI
+   font scale; rather than drop to 8 bytes per row the dump body is
+   drawn at half the font scale, which is what the memory screenshots
+   show.
+5. `fn(&mut App)` cannot open a page, so `mem ADDR` needed the
+   `pending_tool` hand-off described above rather than a special-cased
+   action.
 
 ## Needs a human
 
+- Issue 33: readability of the 8 px memory dump on a real display, the
+  2x pattern tables and half-scale nametables at other window scales,
+  and whether the APU mute should also show on the volume OSD.
 - Feel of the palette: panel size, colours, the block cursor, whether
   eight rows is enough.
 - Key conflicts: P, N and F1 are new hotkeys; Escape from the palette
