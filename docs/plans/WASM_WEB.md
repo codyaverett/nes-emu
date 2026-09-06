@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Type:** Feature Plan
-**Status:** Phases 1 and 2 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md); Phases 3-5 open
+**Status:** Phases 1, 2 and 5 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md, WASM_WEB_DEPLOY.md; Phase 5 pending its first tag deploy); Phases 3 and 4 open
 **Tracking:** GitHub issues listed per phase below
 
 ## Goal
@@ -93,7 +93,7 @@ file so saves can move between machines.
 `Painter` trait, SDL and RGBA implementations, palette and every tool page
 running on both frontends, rewind on the web using the same ring buffer.
 
-### Phase 5: deployment (#53)
+### Phase 5: deployment (#53) - done (pending first deploy)
 GitHub Pages workflow building with `wasm-pack build --release --target
 web`, a size budget (target under 500 KB of wasm), and a hosted demo link
 in the README. Users supply their own ROMs; nothing copyrighted is hosted.

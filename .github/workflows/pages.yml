@@ -1,0 +1,74 @@
+name: Pages
+
+# Builds the browser front end (web/) with wasm-pack and deploys it to
+# GitHub Pages on every version tag. See docs/debugging/WASM_WEB_DEPLOY.md.
+# The repository's Pages source must be set to "GitHub Actions" once.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - name: Build web/pkg
+        run: npm run build
+        working-directory: web
+      - name: Check wasm size budget
+        run: npm run check-size -- pkg/nes_emu_web_bg.wasm
+        working-directory: web
+      - name: Assemble the site
+        # Only what the page needs at runtime: the page files, the wasm
+        # module and its JS glue, and the cheat database when present.
+        # No tests, scripts, node_modules, package files or READMEs.
+        run: |
+          set -eu
+          mkdir -p site/pkg
+          cp web/index.html web/app.js web/audio-worklet.js site/
+          cp web/pkg/*.js web/pkg/*.wasm site/pkg/
+          if [ -f web/cheats.json ]; then
+            cp web/cheats.json site/
+          fi
+          touch site/.nojekyll
+          echo "Site contents:"
+          find site -type f | sort | xargs ls -la
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

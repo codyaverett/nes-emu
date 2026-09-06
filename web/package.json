@@ -8,6 +8,7 @@
     "build": "wasm-pack build --release --target web --out-dir pkg",
     "build:node": "wasm-pack build --release --target nodejs --out-dir pkg-node",
     "test": "npm run build:node && node test/smoke.mjs",
+    "check-size": "node scripts/check-size.mjs",
     "serve": "python3 -m http.server 8080 --bind 127.0.0.1"
   }
 }

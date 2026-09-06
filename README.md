@@ -36,6 +36,22 @@ cd web && npm test                                                 # wasm-pack b
 ```
 See `web/README.md` and `docs/plans/WASM_WEB.md`.
 
+## Play in the browser
+
+The emulator core also runs as WebAssembly. A hosted build is deployed to
+GitHub Pages on every version tag:
+
+https://codyaverett.github.io/nes-emu/
+
+Users supply their own `.nes` files (file picker or drag and drop); the ROM
+stays in the browser tab and nothing copyrighted is hosted. To build and
+serve the page locally:
+```bash
+cd web && npm run build && npm run serve   # then open http://127.0.0.1:8080/
+```
+See `web/README.md` for the build details and `docs/debugging/WASM_WEB_DEPLOY.md`
+for the deployment workflow and the wasm size budget.
+
 ## Running
 
 ```bash

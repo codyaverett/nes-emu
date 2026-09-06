@@ -22,6 +22,7 @@ same numbers for scripts.
 # from this directory
 npm run build        # wasm-pack build --release --target web  -> pkg/
 npm test             # Node build (pkg-node/) plus test/smoke.mjs, 60 frames
+npm run check-size   # wasm size budget (500 KB) and debug-info check, docs/debugging/WASM_WEB_DEPLOY.md
 npm run serve        # static server on http://127.0.0.1:8080 (AudioWorklet needs a secure context)
 
 # from the repository root, without wasm-pack
@@ -31,6 +32,9 @@ cargo test -p nes-emu-web   # the wrapper's own tests, run natively
 
 `wasm-pack` downloads a matching `wasm-bindgen` CLI on first use.
 `pkg/` and `pkg-node/` are build outputs and are ignored by git.
+
+A hosted build is deployed to https://codyaverett.github.io/nes-emu/ on
+every version tag by `.github/workflows/pages.yml`.
 
 ## Notes
 

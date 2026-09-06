@@ -49,5 +49,6 @@ jobs:
       - run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
       - run: npm test
         working-directory: web
-      - name: Report wasm size
-        run: ls -la web/pkg-node/*.wasm
+      - name: Check wasm size budget (500 KB, no debug info)
+        run: npm run check-size -- pkg-node/nes_emu_web_bg.wasm
+        working-directory: web
