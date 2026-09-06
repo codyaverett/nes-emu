@@ -96,11 +96,9 @@ impl Emulator {
     /// `ImageData`. The page applies the overscan crop when it draws.
     pub fn frame_rgba(&mut self) -> Clamped<Vec<u8>> {
         let rgb = self.system.get_frame_buffer();
-        for (dst, src) in self.rgba.chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
-            dst[0] = src[0];
-            dst[1] = src[1];
-            dst[2] = src[2];
-            dst[3] = 0xFF;
+        for i in 0..SCREEN_WIDTH * SCREEN_HEIGHT {
+            self.rgba[i * 4..i * 4 + 3].copy_from_slice(&rgb[i * 3..i * 3 + 3]);
+            self.rgba[i * 4 + 3] = 0xFF;
         }
         Clamped(self.rgba.clone())
     }
