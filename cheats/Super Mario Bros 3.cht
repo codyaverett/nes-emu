@@ -1,0 +1,48 @@
+# Super Mario Bros. 3 (USA)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: 2E6301ED
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+SLXPLOVS	0	Infinite lives
+AEKPTZGA	0	1 life after continue
+AEKPTZGE	0	9 lives after continue
+YNKPTZGE	0	99 lives after continue
+ELKZYVEK	0	Power jump
+EZKZYVEK	0	Super power jump
+EAKZYVEK	0	Mega power jump
+GZUXNGEI	0	Multi-jump
+SXEZSKOZ	0	Skywalker
+OXKZELSX	0	Super speed running
+XVUXNUEE	0	Turbocharged running
+AANZKLLA	0	Raise P-meter while standing still
+PEUZUGAA	0	Start on world 2
+ZEUZUGAA	0	Start on world 3
+LEUZUGAA	0	Start on world 4
+GEUZUGAA	0	Start on world 5
+IEUZUGAA	0	Start on world 6
+TEUZUGAA	0	Start on world 7
+YEUZUGAA	0	Start on world 8
+YPXXLVGE	0	Mario can re-use items
+SZUEXNSO	0	Restore powers after action scene
+ZEUXKGAA	0	Start as Fire Mario
+LEUXKGAA	0	Start as Raccoon Mario
+GEUXKGAA	0	Start as Frog Mario
+IEUXKGAA	0	Start as Tanooki Mario
+TEUXKGAA	0	Start as Hammer Mario
+XUKXGLIE	0	Start and stay Super Mario
+UXKXGLIA	0	Start and stay Fire Mario
+NXKXGLIE	0	Start and stay Raccoon Mario
+OUKXGLIE	0	Start and stay Frog Mario
+XNKXGLIE	0	Start and stay Hammer Mario
+VXKXGLIE	0	Invincible
+KUKXGLIE	0	Flying Mario
+KKKZSPIU	0	Enable debug mode
+SZKIKXSE	0	Invincible after upgrading from Super Mario
+AEOSSZPA+PAOZTGAA	0	Become Super Mario after falling off screen
+AEOSSZPA+ZAOZTGAA	0	Become Fire Mario after falling off screen
+AEOSSZPA+LAOZTGAA	0	Become Raccoon Mario after falling off screen
+AEOSSZPA+TAOZTGAA	0	Become Hammer Mario after falling off screen
+OEPZXZ	0	Enemies and block items become 1-ups
+PGTIPS	0	Most enemies cannot attack
+GEPZXZ	0	1000 points per enemy

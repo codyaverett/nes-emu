@@ -91,3 +91,11 @@ Some limitations remain:
 - No save states or debugging features
 
 For best results, use mapper 0 ROM files.
+
+## Cheats
+
+Bundled Game Genie codes live in `cheats/`, one file per game, matched to
+the ROM by CRC-32 so filenames do not matter. On first run the matching
+file is copied next to the ROM as `<rom>.cht` with every cheat disabled.
+Open the palette (backquote), run `cheats`, and toggle with Space; or type
+`cheat add SXIOPO`. See docs/debugging/CHEAT_ENGINE.md.

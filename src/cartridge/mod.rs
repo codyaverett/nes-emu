@@ -35,7 +35,27 @@ pub struct Cartridge {
     /// Mirroring declared by the header. The live value is `mapper.mirroring()`.
     pub header_mirroring: Mirroring,
     pub battery_backed: bool,
+    /// CRC-32 of the image after the 16-byte header (PRG then CHR), the
+    /// value databases use to identify a dump. Used to match bundled
+    /// cheat files (docs/debugging/CHEAT_ENGINE.md).
+    pub rom_crc32: u32,
     pub mapper: Box<dyn Mapper>,
+}
+
+/// Plain table-driven CRC-32 (IEEE), the same polynomial as zlib.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
 }
 
 impl Cartridge {
@@ -119,6 +139,7 @@ impl Cartridge {
             mapper_id,
             header_mirroring: mirroring,
             battery_backed,
+            rom_crc32: crc32(&data[16..]),
             mapper,
         })
     }

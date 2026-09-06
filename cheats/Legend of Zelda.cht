@@ -1,0 +1,20 @@
+# The Legend of Zelda (USA)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: 3FE272FB
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+AVVLAUSZ	0	Total invincibility
+YYKPOYZZ	0	Start with 8 heart containers
+NYKPOYZX	0	Start with 16 heart containers
+SZVXASVK	0	Keep rupees after buying
+SZNZVOVK	0	Infinite bombs
+AEOEPSZA	0	Infinite keys
+ESKUILTA	0	Start with blue ring
+OSKUILTA	0	Start with red ring
+ESKUYLTA	0	Start with magic sword
+SZVXASVK+AEVEVALG	0	All shop items free
+AOEUYTEY	0	No candle needed in dark rooms
+KTVXXZ	0	All hidden entrances revealed
+AEOANAEG	0	Only one enemy per screen
+GZXXXZ	0	Walk through walls (limited)

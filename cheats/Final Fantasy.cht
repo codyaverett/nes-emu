@@ -1,0 +1,40 @@
+# Final Fantasy (USA)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: CEBD2A31
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+SUXXAUVS	0	Infinite spell points in battle
+SLVPZVVS	0	Infinite heal and pure potions in battle
+AAKLNLIP	0	Any spell cast on an enemy defeats it
+XXEGTIVZ	0	No random battles
+SXUKUNSU+EVUKSNKA	0	Fewer random battles in dungeons
+SZOXYKGK	0	Running from battle always works
+AAUPKVTA	0	Gold maxed at 999999 after battle
+GXSZPKSV+GXSXZKSV	0	Almost infinite gold
+NYOUTAAE	0	Start a new game with maximum gold
+AAEOXIGA	0	All stats increase at level-up
+AEKPVKZA	0	All level-ups are strong
+AEXOVZYA	0	Status ailments cured after battle
+SZXUGUVK	0	Infinite heal potions outside battle
+SZKUTUVK	0	Infinite pure potions outside battle
+SZNLTUVK	0	Infinite soft potions outside battle
+SXEUPXVK	0	Infinite tents
+SXXLTXVK	0	Infinite cabins
+SXKLLXVK	0	Infinite houses
+AAULOKLA+AAULEKEL	0	Houses are free
+OXUZLKOK+SOUXYKVN	0	Item shop purchases give 99
+XIOLLALP+UZOLGAVU	0	HEAL spells fully heal all outside battle
+PZEXKLIX+AAEXSLGP	0	Any class can buy any spell
+APKLXGAV	0	Any class can equip any weapon
+XTNUSGAV	0	Any class can equip any armor
+APVGOTEI	0	Enter locked rooms without the mystic key
+TAEKITVS	0	Use the ship before getting it
+AENGAIUY	0	Use the canoe before getting it
+GPOKPZPZ	0	Use the airship before getting it
+GAYSAA	0	Walk super fast
+AAKKSAPA	0	No poison damage on the field
+XTEGKGAV	0	Reopen any treasure chest
+EETPUO	0	Enemies cannot find you
+ELEXVLEY+AESGANGA+AESGGNAA	0	Non-magic users can use level 1 magic
+OZOSGTSX+TIOSIVLO+AEOSYTXY	0	Faster dialogue

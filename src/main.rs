@@ -103,6 +103,8 @@ fn usage(program: &str) -> ! {
     );
     eprintln!("Battery-backed games read and write <rom_file with .sav extension>.");
     eprintln!("Cheats are read from and written to <rom_file with .cht extension>.");
+    eprintln!("Without one, the bundled cheats/ directory is searched by ROM CRC-32");
+    eprintln!("(override with --cheats-dir PATH); the match is copied next to the ROM.");
     eprintln!("Backquote opens the command palette; F1 opens the help page.");
     eprintln!("--screenshot PATH:N writes the window as binary PPM after N presented frames.");
     eprintln!(
@@ -343,9 +345,42 @@ fn main() -> Result<()> {
     // Cheats live next to the ROM as <rom>.cht (docs/debugging/CHEAT_ENGINE.md).
     // Loaded once here; the App rewrites the file on every change.
     let cheat_path = Path::new(rom_path).with_extension("cht");
+    let cheats_dir = args
+        .iter()
+        .position(|a| a == "--cheats-dir")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("cheats"));
     match system.load_cheats(&cheat_path) {
-        Ok(true) => {}
-        Ok(false) => log::info!("No cheat file at {}", cheat_path.display()),
+        Ok(true) => log::info!("Loaded cheats from {}", cheat_path.display()),
+        Ok(false) => {
+            // No working file yet: seed it from the bundled database by CRC.
+            let crc = system.cartridge.as_ref().map(|c| c.rom_crc32).unwrap_or(0);
+            match nes_emu::cheat::find_in_database(&cheats_dir, crc) {
+                Some(db_path) => match system.load_cheats(&db_path) {
+                    Ok(true) => {
+                        log::info!(
+                            "Seeded {} cheats from {} (ROM CRC-32 {:08X}); saved to {}",
+                            system.cheats().len(),
+                            db_path.display(),
+                            crc,
+                            cheat_path.display()
+                        );
+                        if let Err(e) = system.save_cheats(&cheat_path) {
+                            log::warn!("Could not write {}: {}", cheat_path.display(), e);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => log::warn!("Could not read {}: {}", db_path.display(), e),
+                },
+                None => log::info!(
+                    "No cheats for ROM CRC-32 {:08X} in {} and no {}",
+                    crc,
+                    cheats_dir.display(),
+                    cheat_path.display()
+                ),
+            }
+        }
         Err(e) => log::warn!("Could not read {}: {}", cheat_path.display(), e),
     }
 

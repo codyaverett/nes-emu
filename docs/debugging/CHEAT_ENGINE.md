@@ -212,3 +212,47 @@ the hook in place (see the PR for the run).
 - `"91D9"` with no colon is parsed as a Game Genie code and fails on the
   letter `9`, not as a malformed raw code. That is intended: anything
   without `:` is treated as Game Genie.
+
+## Using cheats
+
+1. Run a game. If `<rom>.cht` does not exist next to the ROM, the binary
+   looks in `cheats/` (or `--cheats-dir PATH`) for a bundled file whose
+   `# crc32:` header matches the ROM image, loads it with every cheat
+   disabled, and saves it as `<rom>.cht`. From then on that file is the
+   working copy; the bundled one is never modified.
+2. Press backquote, type `cheats`, Enter. The page lists every cheat with
+   `[x]` or `[ ]`. Move with Up/Down, Space toggles, A adds a code (then a
+   description), D deletes, E edits the description, Escape closes.
+3. Or from the palette directly: `cheat add SXIOPO`, `cheat toggle 3`,
+   `cheat clear`.
+4. Every change is written to `<rom>.cht` immediately. Game Genie codes
+   patch ROM reads, so most take effect at once; codes that change what
+   you start with (lives, world, items) need a reset (R) to be seen.
+
+Multi-part codes are written with `+` between the parts
+(`OZTLLX+AATLGZ+SZLIVO`) and toggle as one cheat. Where a code has an
+alternate for a different dump, the bundled file notes it in the
+description.
+
+## Bundled database (`cheats/`)
+
+One file per game, plain `.cht` text with a header:
+
+```
+# Super Mario Bros. (World)
+# crc32: 8E2BD25C
+# crc32: D26EFD78
+SXIOPO<TAB>0<TAB>Infinite lives for both players
+```
+
+`crc32` is the CRC-32 of the image after the 16-byte iNES header, the
+value No-Intro and other databases use, so the file matches regardless of
+the ROM's filename. A file may list several CRCs for different dumps. The
+memory page or `RUST_LOG=info` shows the CRC of the loaded ROM. To add a
+game, copy a file, replace the header and the codes, and run
+`cargo test --test cheat_database`, which parses every bundled file.
+
+Codes were collected from published Game Genie lists (gamegenie.com,
+themushroomkingdom.net, zeldacentral.com, the libretro cheat database).
+They were decoded and checked for syntax only; whether a given code does
+what its description says on a given dump is up to the game.

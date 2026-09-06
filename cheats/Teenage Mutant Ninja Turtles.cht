@@ -1,0 +1,14 @@
+# Teenage Mutant Ninja Turtles (USA)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: EE921D8E
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+GXSOUAST	0	Take no damage from most sources
+SXVZGSOO	0	No damage from non-killing seaweed
+AEOOGTZA	0	Full energy from pizza slices
+ZENOATGO	0	Pick up 10 weapons
+ZUNOATGP	0	Pick up 50 weapons
+GPUOLNZA	0	20 missiles on pick-up
+TAKOPYLA	0	Double rope on pick-up
+SXVXTLVG	0	Never lose rope

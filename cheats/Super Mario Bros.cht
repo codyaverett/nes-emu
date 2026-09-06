@@ -1,0 +1,33 @@
+# Super Mario Bros. (World)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: 8E2BD25C
+# crc32: D26EFD78
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+SXIOPO	0	Infinite lives for both players
+AATOZA	0	Start with 1 life
+IATOZA	0	Start with 6 lives
+AATOZE	0	Start with 9 lives
+VATOLE	0	Player 1 starts with 8 lives, player 2 with 3
+SXULKNSE	0	Do not lose power-ups when hit
+ALASKA	0	Every power-up acts as a star
+AZSLPIAK	0	Slower running
+AUSUPLAZ	0	Faster jumps
+APZLGK	0	Super jump from a standing start
+TPZLTG	0	Super jump from running
+GPZUAG	0	Super jump from turbo running
+APZLGG	0	Mega jump from a standing start
+APZLTG	0	Mega jump from running
+GAZUAG	0	Mega jump from turbo running
+YAZULG	0	Moon gravity from a standing start
+YAZUIG	0	Moon gravity from a running start
+YAZUYG	0	Moon gravity from turbo running
+OZTLLX+AATLGZ+SZLIVO	0	Always stay big
+YSAOPE+YEAOZA+PEAPYA	0	Start on world 2
+YSAOPE+YEAOZA+ZEAPYA	0	Start on world 3
+YSAOPE+YEAOZA+LEAPYA	0	Start on world 4
+YSAOPE+YEAOZA+GEAPYA	0	Start on world 5
+YSAOPE+YEAOZA+IEAPYA	0	Start on world 6
+YSAOPE+YEAOZA+TEAPYA	0	Start on world 7
+YSAOPE+YEAOZA+YEAPYA	0	Start on world 8

@@ -76,7 +76,9 @@ pub struct Cheat {
     pub code: String,
     pub description: String,
     pub enabled: bool,
-    pub kind: CheatKind,
+    /// One patch per part of the code. Multi-part codes are written with
+    /// `+` between the parts (`OZTLLX+AATLGZ+SZLIVO`) and toggle together.
+    pub patches: Vec<CheatKind>,
 }
 
 /// Upper-case the code and drop whitespace and dashes.
@@ -194,17 +196,28 @@ impl Cheat {
         if code.is_empty() {
             return Err(CheatError::Empty);
         }
-        let kind = if code.contains(':') {
-            decode_raw(&code)?
-        } else {
-            decode_game_genie(&code)?
-        };
+        let mut patches = Vec::new();
+        for part in code.split('+') {
+            if part.is_empty() {
+                return Err(CheatError::Empty);
+            }
+            patches.push(if part.contains(':') {
+                decode_raw(part)?
+            } else {
+                decode_game_genie(part)?
+            });
+        }
         Ok(Cheat {
             code,
             description: String::new(),
             enabled: true,
-            kind,
+            patches,
         })
+    }
+
+    /// The first patch; every code has at least one.
+    pub fn kind(&self) -> &CheatKind {
+        &self.patches[0]
     }
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
@@ -303,16 +316,18 @@ impl CheatSet {
         if !self.active {
             return None;
         }
-        self.cheats.iter().find_map(|c| match c.kind {
-            CheatKind::Rom {
-                addr: a,
-                value,
-                compare,
-            } if c.enabled && a == addr && compare.is_none_or(|cmp| cmp == rom_value) => {
-                Some(value)
-            }
-            _ => None,
-        })
+        self.cheats
+            .iter()
+            .filter(|c| c.enabled)
+            .flat_map(|c| c.patches.iter())
+            .find_map(|patch| match *patch {
+                CheatKind::Rom {
+                    addr: a,
+                    value,
+                    compare,
+                } if a == addr && compare.is_none_or(|cmp| cmp == rom_value) => Some(value),
+                _ => None,
+            })
     }
 
     /// Call `poke(addr, value)` for every enabled RAM freeze, in order.
@@ -320,9 +335,9 @@ impl CheatSet {
         if !self.active {
             return;
         }
-        for c in &self.cheats {
-            if let CheatKind::RamFreeze { addr, value } = c.kind {
-                if c.enabled {
+        for c in self.cheats.iter().filter(|c| c.enabled) {
+            for patch in &c.patches {
+                if let CheatKind::RamFreeze { addr, value } = *patch {
                     poke(addr, value);
                 }
             }
@@ -365,6 +380,36 @@ impl fmt::Display for CheatSet {
         }
         Ok(())
     }
+}
+
+/// Search `dir` for a bundled `.cht` file whose `# crc32:` header lines
+/// include `crc`. Files carry one or more `# crc32: XXXXXXXX` lines so a
+/// single file can cover several known dumps of a game. Returns the path
+/// of the first match in name order, or `None`.
+pub fn find_in_database(dir: &std::path::Path, crc: u32) -> Option<std::path::PathBuf> {
+    let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "cht"))
+        .collect();
+    names.sort();
+    names.into_iter().find(|path| {
+        std::fs::read_to_string(path)
+            .map(|text| database_crcs(&text).contains(&crc))
+            .unwrap_or(false)
+    })
+}
+
+/// Every `# crc32: XXXXXXXX` value declared in a `.cht` file's header.
+pub fn database_crcs(text: &str) -> Vec<u32> {
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix('#')?.trim();
+            let value = rest.strip_prefix("crc32:")?.trim();
+            u32::from_str_radix(value, 16).ok()
+        })
+        .collect()
 }
 
 impl FromStr for CheatSet {
@@ -411,7 +456,7 @@ mod tests {
     }
 
     fn rom(code: &str) -> (u16, u8, Option<u8>) {
-        match Cheat::parse(code).unwrap().kind {
+        match Cheat::parse(code).unwrap().kind().clone() {
             CheatKind::Rom {
                 addr,
                 value,
@@ -486,7 +531,7 @@ mod tests {
     #[test]
     fn raw_codes() {
         assert_eq!(
-            Cheat::parse("075a:02").unwrap().kind,
+            Cheat::parse("075a:02").unwrap().kind().clone(),
             CheatKind::RamFreeze {
                 addr: 0x075A,
                 value: 0x02
@@ -586,5 +631,22 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn multi_part_codes_toggle_together() {
+        let cheat = Cheat::parse("oztllx + aatlgz + szlivo").unwrap();
+        assert_eq!(cheat.code, "OZTLLX+AATLGZ+SZLIVO");
+        assert_eq!(cheat.patches.len(), 3);
+        let mut set = CheatSet::new();
+        set.add(cheat);
+        let hits: Vec<u16> = (0x8000u32..=0xFFFF)
+            .filter(|&a| set.rom_override(a as u16, 0x00).is_some())
+            .map(|a| a as u16)
+            .collect();
+        assert_eq!(hits.len(), 3, "each part overrides its own address");
+        set.toggle(0);
+        assert!(set.rom_override(hits[0], 0x00).is_none());
+        assert!(Cheat::parse("SXIOPO+").is_err());
     }
 }

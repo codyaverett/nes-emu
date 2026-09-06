@@ -2,6 +2,21 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.10.1] - 2026-09-06
+
+### Added
+- Bundled cheat database in cheats/: 175 published Game Genie codes for
+  Super Mario Bros. 1, 2 and 3, The Legend of Zelda, Contra, Teenage Mutant
+  Ninja Turtles, Tetris, Final Fantasy and River City Ransom. Files are
+  matched to the loaded ROM by CRC-32 of the image and copied next to the
+  ROM as the working .cht on first run, all cheats disabled. --cheats-dir
+  overrides the directory.
+- Multi-part Game Genie codes (parts joined with +) toggle as one cheat.
+- Cartridge::rom_crc32 and a plain CRC-32 helper in the library.
+- A test that every bundled file parses and declares a CRC.
+
+---
+
 ## [0.10.0] - 2026-09-06
 
 Closes issues 30, 32 and 33: the in-app command palette, tool pages and

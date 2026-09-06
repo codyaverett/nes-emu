@@ -1,0 +1,17 @@
+# River City Ransom (USA)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: E9C387EC
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+SUNEUKSO	0	Infinite lives
+TOSNAVYE	0	Start with double every attribute
+LVNYIVYL	0	Stamina 99
+AGENAYAZ	0	Player 1 starts with double money
+AGOYYYAZ	0	Player 2 starts with double money
+PAENIYAA	0	Player 1 starts with 100 dollars extra
+PAONGYAA	0	Player 2 starts with 100 dollars extra
+VSINAV	0	Super stats (222)
+EKYYIV	0	Stamina and max power 200
+SOSPPP	0	Enemies die in one hit
+EKISSS	0	Super power punch

@@ -1,0 +1,35 @@
+# Super Mario Bros. 2 (USA)
+# nes-emu cheat database entry: CODE<TAB>1|0<TAB>description
+# Match by ROM CRC-32 (image after the iNES header); add more lines for other dumps.
+# crc32: CA594ACE
+# Sources: gamegenie.com, themushroomkingdom.net, zeldacentral.com, libretro-database
+
+SZNESXVK	0	Infinite lives
+GZELVXSE	0	Infinite life meter (except spikes)
+SXUASXOU	0	Quick pick up
+AEUEKKGL	0	Special squat high jumps
+PPXAOIAA	0	Princess has mega float
+PAXAOIAA	0	Princess has mega float and lunar descent
+PESEGLGA	0	Super moon jumps for Mario
+AAEEZGPA	0	Mega moon jumps for Luigi
+PENALLGA	0	Super moon jumps for Toad
+PAXAPGGA	0	Super moon jumps for Princess
+AEXALGZA	0	Speed up enemies
+GOEANKAO+USEEEKKA	0	Walk backwards
+XVVANSZK+XVNEXSZV	0	Super turbo running
+AEVAVIIA+AENEEITA	0	Permanent turbo running
+AXSETUAO+ESVAPUEV	0	Super fast run for Mario
+AZEEGKAO+EIEEYKEV	0	Super fast run for Luigi
+AXNAIUAO+ESNEAUEV	0	Fast run for Toad
+AZXALKAO+EIXATKEV	0	Super fast run for Princess
+AXNAZSAA+EVNALSEY	0	Super speed enemies
+YESUAPTE	0	Strong Wart (alt YESLPPTE)
+YAXXIYZE	0	Strong Tryclyde
+YAVXVGGE	0	Strong Fryguy
+YAEXTPGE	0	Strong Clawgrip
+PEEPUZAG+IUEPSZAA+TEEPVZPA	0	Start on world 2
+ZEEPUZAG+IUEPSZAA+TEEPVZPA	0	Start on world 3
+LEEPUZAG+IUEPSZAA+TEEPVZPA	0	Start on world 4
+GEEPUZAG+IUEPSZAA+TEEPVZPA	0	Start on world 5
+IEEPUZAG+IUEPSZAA+TEEPVZPA	0	Start on world 6
+TEEPUZAG+IUEPSZAA+TEEPVZPA	0	Start on world 7
