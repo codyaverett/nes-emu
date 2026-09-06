@@ -17,6 +17,7 @@ Contains debugging session notes and references:
 - `PPU_SPRITE_PIPELINE.md` - Per-dot sprite evaluation and fetch, overflow scan bug, sprite 0 hit rules, 8-pixel background shift fix, MMC3 A12 dot timing (#11)
 - `TETRIS_MMC1_FIX.md` - Tetris garbled tiles traced to an archaic DiskDude iNES header read as mapper 65; header sanitising in the cartridge loader (#22)
 - `BATTERY_SAVES.md` - Battery-backed PRG RAM persisted to a .sav file next to the ROM; Mapper prg_ram accessors, System::load_battery/save_battery, hash-based dirty flush (#26)
+- `CHEAT_ENGINE.md` - Game Genie and raw code decoding, ROM-read and per-frame RAM-freeze hooks in System, .cht file format, headless SMB SXIOPO proof (#31)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:

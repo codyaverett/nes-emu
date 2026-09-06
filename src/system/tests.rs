@@ -553,3 +553,115 @@ fn dmc_dma_inside_oam_dma_costs_two_extra_cycles() {
         "sample byte fetched during OAM DMA"
     );
 }
+
+// ----------------------------------------------------------------------
+// Cheat engine hooks (docs/debugging/CHEAT_ENGINE.md, issue #31).
+// ----------------------------------------------------------------------
+
+use crate::cheat::Cheat;
+
+const LDA_IMM: u8 = 0xA9;
+
+/// `LDA #$11` at the reset vector; the operand at $8001 is what the cheats
+/// below target.
+fn lda_system() -> System {
+    system_with_rom(|prg| {
+        prg[0] = LDA_IMM;
+        prg[1] = 0x11;
+    })
+}
+
+#[test]
+fn rom_cheat_overrides_cpu_read() {
+    let mut sys = lda_system();
+    sys.cheats_mut().add(Cheat::parse("8001:22").unwrap());
+    assert_eq!(sys.cpu_step(), 2);
+    assert_eq!(sys.reg_a(), 0x22, "operand fetch went through the cheat");
+    assert_eq!(sys.peek(0x8001), 0x11, "peek still shows the real ROM byte");
+}
+
+#[test]
+fn rom_cheat_compare_mismatch_leaves_rom_alone() {
+    let mut sys = lda_system();
+    sys.cheats_mut().add(Cheat::parse("8001?99:22").unwrap());
+    sys.cpu_step();
+    assert_eq!(sys.reg_a(), 0x11);
+
+    let mut sys = lda_system();
+    sys.cheats_mut().add(Cheat::parse("8001?11:22").unwrap());
+    sys.cpu_step();
+    assert_eq!(sys.reg_a(), 0x22, "compare matches the real byte");
+}
+
+#[test]
+fn disabled_rom_cheat_does_nothing() {
+    let mut sys = lda_system();
+    let idx = sys.cheats_mut().add(Cheat::parse("8001:22").unwrap());
+    sys.cheats_mut().toggle(idx);
+    assert!(!sys.cheats().is_active());
+    sys.cpu_step();
+    assert_eq!(sys.reg_a(), 0x11);
+}
+
+#[test]
+fn ram_freeze_reapplied_each_frame() {
+    let mut sys = system();
+    sys.poke(0x0010, 0x05);
+    sys.cheats_mut().add(Cheat::parse("0010:42").unwrap());
+    sys.run_frame();
+    assert_eq!(sys.peek(0x0010), 0x42, "frozen at frame start");
+    // The game overwrites it mid-frame...
+    sys.poke(0x0010, 0x07);
+    assert_eq!(sys.peek(0x0010), 0x07);
+    // ...and the next frame puts it back.
+    sys.run_frame();
+    assert_eq!(sys.peek(0x0010), 0x42);
+
+    // Disabled: the game's value survives.
+    sys.cheats_mut().set_enabled(0, false);
+    sys.poke(0x0010, 0x07);
+    sys.run_frame();
+    assert_eq!(sys.peek(0x0010), 0x07);
+}
+
+#[test]
+fn cheat_file_round_trip_through_system() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "nes-emu-cheats-{}-{}.cht",
+        std::process::id(),
+        nanos
+    ));
+
+    let mut sys = system();
+    assert!(
+        !sys.load_cheats(&path).unwrap(),
+        "missing file is Ok(false)"
+    );
+    assert!(sys.cheats().is_empty());
+
+    sys.cheats_mut().add(
+        Cheat::parse("SXIOPO")
+            .unwrap()
+            .with_description("Infinite lives"),
+    );
+    sys.cheats_mut().add(Cheat::parse("0010:42").unwrap());
+    sys.cheats_mut().set_enabled(1, false);
+    assert!(sys.save_cheats(&path).unwrap());
+
+    let mut other = system();
+    assert!(other.load_cheats(&path).unwrap());
+    assert_eq!(other.cheats(), sys.cheats());
+    assert!(other.cheats().is_active());
+
+    // A malformed file is InvalidData and leaves the set untouched.
+    std::fs::write(&path, "NOTACODE\t1\tbad\n").unwrap();
+    let err = other.load_cheats(&path).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(other.cheats().len(), 2);
+
+    let _ = std::fs::remove_file(&path);
+}

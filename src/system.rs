@@ -1,5 +1,6 @@
 use crate::apu::Apu;
 use crate::cartridge::{Cartridge, Mapper, NullMapper};
+use crate::cheat::CheatSet;
 use crate::input::Controller;
 use crate::ppu::Ppu;
 use std::cell::Cell;
@@ -110,6 +111,10 @@ pub struct System {
     /// changed. `None` until the first load or save. A `Cell` so
     /// `save_battery` can take `&self` (docs/debugging/BATTERY_SAVES.md).
     battery_saved_hash: Cell<Option<u64>>,
+    /// Active cheats (docs/debugging/CHEAT_ENGINE.md). ROM patches are
+    /// consulted in `bus_read`; RAM freezes are applied at the start of
+    /// each frame in `run_frame_with_audio`.
+    cheats: CheatSet,
 }
 
 /// A scheduled DMC DMA. The APU's memory reader asks for a byte either
@@ -177,6 +182,7 @@ impl System {
             cartridge: None,
             null_mapper: NullMapper,
             battery_saved_hash: Cell::new(None),
+            cheats: CheatSet::new(),
             instr_cycles: 0,
             dma_cycles: 0,
             dmc_dma: None,
@@ -532,7 +538,15 @@ impl System {
                 0x00
             }
             0x4020..=0xFFFF => match self.cartridge {
-                Some(ref mut cart) => cart.mapper.cpu_read(addr),
+                Some(ref mut cart) => {
+                    let value = cart.mapper.cpu_read(addr);
+                    // Game Genie style ROM patch; `is_active` is one bool.
+                    if self.cheats.is_active() && addr >= 0x8000 {
+                        self.cheats.rom_override(addr, value).unwrap_or(value)
+                    } else {
+                        value
+                    }
+                }
                 None => 0,
             },
             _ => 0,
@@ -610,6 +624,7 @@ impl System {
     ) -> bool {
         let start_frame = self.ppu.frame;
         self.audio_capture = audio_buffer.is_some();
+        self.apply_ram_freezes();
 
         // The PPU frame counter advances inside `tick`, so a frame ends at
         // the end of whichever instruction crosses the boundary.
@@ -3388,6 +3403,64 @@ impl System {
             path.display(),
             ram.len()
         );
+        Ok(true)
+    }
+
+    // ------------------------------------------------------------------
+    // Cheats (docs/debugging/CHEAT_ENGINE.md).
+    // ------------------------------------------------------------------
+
+    pub fn cheats(&self) -> &CheatSet {
+        &self.cheats
+    }
+
+    /// Mutable access to the cheat set. `CheatSet` maintains its own
+    /// active flag, so no refresh is needed after editing through this.
+    pub fn cheats_mut(&mut self) -> &mut CheatSet {
+        &mut self.cheats
+    }
+
+    /// Poke every enabled RAM freeze. Called once at the start of each
+    /// frame; a no-op unless some cheat is enabled.
+    fn apply_ram_freezes(&mut self) {
+        if !self.cheats.is_active() {
+            return;
+        }
+        let freezes: Vec<(u16, u8)> = {
+            let mut v = Vec::new();
+            self.cheats
+                .apply_ram_freezes(|addr, value| v.push((addr, value)));
+            v
+        };
+        for (addr, value) in freezes {
+            self.poke(addr, value);
+        }
+    }
+
+    /// Replace the cheat set with the contents of a `.cht` file.
+    ///
+    /// Returns `Ok(false)` without touching the set when the file does not
+    /// exist. A malformed file is reported as `InvalidData` and leaves the
+    /// current set untouched.
+    pub fn load_cheats(&mut self, path: &Path) -> io::Result<bool> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let set = CheatSet::parse(&text)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        log::info!("Loaded {} cheat(s) from {}", set.len(), path.display());
+        self.cheats = set;
+        Ok(true)
+    }
+
+    /// Write the cheat set to `path` in `.cht` format. An empty set is
+    /// written too, so a cleared list does not come back on the next load.
+    /// Returns `Ok(true)` when the file was written.
+    pub fn save_cheats(&self, path: &Path) -> io::Result<bool> {
+        std::fs::write(path, self.cheats.to_string())?;
+        log::info!("Wrote {} cheat(s) to {}", self.cheats.len(), path.display());
         Ok(true)
     }
 
