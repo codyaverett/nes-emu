@@ -47,6 +47,19 @@ pub trait Mapper: Send {
     /// that A12 must have been low for several PPU cycles first. MMC3 clocks
     /// its IRQ counter here. No-op for everything else.
     fn ppu_a12_rise(&mut self) {}
+
+    /// Borrow the board's PRG RAM ($6000-$7FFF) for battery persistence.
+    /// `None` for boards without PRG RAM. Returns the raw array even when
+    /// the board has gated it off the bus (MMC3 $A001), since that gate
+    /// controls CPU access, not what the battery keeps.
+    fn prg_ram(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Mutable counterpart of `prg_ram`, used to restore a save file.
+    fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
+        None
+    }
 }
 
 /// Mapper used when no cartridge is loaded: open bus everywhere.

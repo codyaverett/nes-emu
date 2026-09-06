@@ -2,7 +2,11 @@ use crate::apu::Apu;
 use crate::cartridge::{Cartridge, Mapper, NullMapper};
 use crate::input::Controller;
 use crate::ppu::Ppu;
+use std::cell::Cell;
 use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 // Interrupt tests live in src/system/tests.rs (a child module, so they can
@@ -83,6 +87,11 @@ pub struct System {
     /// loaded mapper's own `irq_pending()`. Used by tests to drive the line
     /// without a cartridge that has an IRQ counter.
     pub mapper_irq: bool,
+    /// Hash of PRG RAM as last loaded from or written to the battery save
+    /// file, so a periodic `save_battery` can skip the write when nothing
+    /// changed. `None` until the first load or save. A `Cell` so
+    /// `save_battery` can take `&self` (docs/debugging/BATTERY_SAVES.md).
+    battery_saved_hash: Cell<Option<u64>>,
 }
 
 impl Default for System {
@@ -107,6 +116,7 @@ impl System {
             controller2: Controller::new(),
             cartridge: None,
             null_mapper: NullMapper,
+            battery_saved_hash: Cell::new(None),
             instr_cycles: 0,
             dma_in_instr: false,
             audio_sample_counter: 0.0,
@@ -174,6 +184,7 @@ impl System {
         // Pattern tables and mirroring are served by the cartridge mapper on
         // every PPU access, so nothing is copied into the PPU here.
         self.cartridge = Some(cartridge);
+        self.battery_saved_hash.set(None);
         self.reset();
     }
 
@@ -3016,6 +3027,92 @@ impl System {
 
     pub fn pc(&self) -> u16 {
         self.cpu_pc
+    }
+
+    // ------------------------------------------------------------------
+    // Battery-backed PRG RAM persistence (docs/debugging/BATTERY_SAVES.md).
+    // ------------------------------------------------------------------
+
+    /// PRG RAM of the loaded cartridge if, and only if, the iNES header
+    /// flags it as battery backed and the mapper exposes PRG RAM.
+    fn battery_ram(&self) -> Option<&[u8]> {
+        let cart = self.cartridge.as_ref()?;
+        if !cart.battery_backed {
+            return None;
+        }
+        cart.mapper.prg_ram()
+    }
+
+    fn hash_ram(ram: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        ram.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Restore battery-backed PRG RAM from `path`.
+    ///
+    /// Returns `Ok(false)` without touching RAM when the cartridge is not
+    /// battery backed, when the file does not exist, or when its size does
+    /// not match the board's PRG RAM (logged as a warning). Other I/O
+    /// errors are returned. `Ok(true)` means RAM was replaced by the file.
+    pub fn load_battery(&mut self, path: &Path) -> io::Result<bool> {
+        let expected = match self.battery_ram() {
+            Some(ram) => ram.len(),
+            None => return Ok(false),
+        };
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if data.len() != expected {
+            log::warn!(
+                "Ignoring battery save {}: {} bytes, expected {}",
+                path.display(),
+                data.len(),
+                expected
+            );
+            return Ok(false);
+        }
+        let ram = self
+            .cartridge
+            .as_mut()
+            .and_then(|cart| cart.mapper.prg_ram_mut())
+            .expect("battery_ram() checked the cartridge and mapper");
+        ram.copy_from_slice(&data);
+        self.battery_saved_hash.set(Some(Self::hash_ram(ram)));
+        log::info!(
+            "Loaded battery save {} ({} bytes)",
+            path.display(),
+            expected
+        );
+        Ok(true)
+    }
+
+    /// Write battery-backed PRG RAM to `path` if it changed since the last
+    /// load or save.
+    ///
+    /// Returns `Ok(false)` when the cartridge is not battery backed or when
+    /// PRG RAM is identical to what was last loaded or written, so a caller
+    /// may invoke this every few seconds; nothing is written in that case.
+    /// `Ok(true)` means the file was (re)written.
+    pub fn save_battery(&self, path: &Path) -> io::Result<bool> {
+        let ram = match self.battery_ram() {
+            Some(ram) => ram,
+            None => return Ok(false),
+        };
+        let hash = Self::hash_ram(ram);
+        if self.battery_saved_hash.get() == Some(hash) {
+            return Ok(false);
+        }
+        std::fs::write(path, ram)?;
+        self.battery_saved_hash.set(Some(hash));
+        log::info!(
+            "Wrote battery save {} ({} bytes)",
+            path.display(),
+            ram.len()
+        );
+        Ok(true)
     }
 
     pub fn set_pc(&mut self, pc: u16) {

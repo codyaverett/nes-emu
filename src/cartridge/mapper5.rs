@@ -330,6 +330,14 @@ impl Mapper for Mapper5 {
             self.scanline_counter = self.scanline_counter.wrapping_add(1);
         }
     }
+
+    fn prg_ram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
+        Some(&mut self.prg_ram)
+    }
 }
 
 #[cfg(test)]

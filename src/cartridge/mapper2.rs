@@ -69,6 +69,14 @@ impl Mapper for Mapper2 {
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
+
+    fn prg_ram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    fn prg_ram_mut(&mut self) -> Option<&mut [u8]> {
+        Some(&mut self.prg_ram)
+    }
 }
 
 #[cfg(test)]

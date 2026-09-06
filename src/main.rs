@@ -8,6 +8,7 @@ use sdl2::render::TextureCreator;
 use sdl2::video::WindowContext;
 use std::collections::VecDeque;
 use std::env;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,10 @@ const AUDIO_TARGET_SAMPLES: usize = 2450;
 /// Samples per SDL callback. Smaller callbacks mean smaller dips in the
 /// queue between presents.
 const AUDIO_DEVICE_SAMPLES: u16 = 512;
+
+/// How often battery-backed PRG RAM is flushed to the .sav file while
+/// running. `System::save_battery` only writes when the RAM changed.
+const BATTERY_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Pixels hidden on every edge of the picture by default. A CRT never
 /// shows them, and games rely on that: Final Fantasy draws the map row
@@ -83,6 +88,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <rom_file> [--no-audio] [--full-frame]", args[0]);
+        eprintln!("Battery-backed games read and write <rom_file with .sav extension>.");
         std::process::exit(1);
     }
 
@@ -173,7 +179,20 @@ fn main() -> Result<()> {
     };
 
     let mut system = System::new();
+    let battery_backed = cartridge.battery_backed;
     system.load_cartridge(cartridge);
+
+    // Battery-backed PRG RAM lives next to the ROM as <rom>.sav. Loaded
+    // once here, flushed every few seconds below and once more on exit.
+    let save_path = Path::new(rom_path).with_extension("sav");
+    if battery_backed {
+        match system.load_battery(&save_path) {
+            Ok(true) => {}
+            Ok(false) => log::info!("No battery save at {}", save_path.display()),
+            Err(e) => log::warn!("Could not read {}: {}", save_path.display(), e),
+        }
+    }
+    let mut last_battery_flush = Instant::now();
 
     let frame_duration = Duration::from_nanos(16_666_667);
     let mut _last_frame = Instant::now();
@@ -311,6 +330,13 @@ fn main() -> Result<()> {
 
         canvas.present();
 
+        if last_battery_flush.elapsed() >= BATTERY_FLUSH_INTERVAL {
+            last_battery_flush = Instant::now();
+            if let Err(e) = system.save_battery(&save_path) {
+                log::warn!("Could not write {}: {}", save_path.display(), e);
+            }
+        }
+
         let elapsed = frame_start.elapsed();
         if audio_buffer.is_some() {
             // Audio paces emulation; just avoid spinning between presents.
@@ -324,6 +350,10 @@ fn main() -> Result<()> {
         }
 
         _last_frame = Instant::now();
+    }
+
+    if let Err(e) = system.save_battery(&save_path) {
+        log::warn!("Could not write {}: {}", save_path.display(), e);
     }
 
     log::info!("Emulation stopped.");
