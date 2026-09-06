@@ -62,6 +62,57 @@ assert.throws(() => emu.set_cheats_text("NOTACODE!\t1\tx\n"));
 assert.notEqual(emu.rom_crc32(), 0);
 assert.match(core_version(), /^\d+\.\d+\.\d+$/);
 
+// Shared overlay UI (issue #52, docs/plans/SHARED_OVERLAY_UI.md).
+emu.set_now_ms(Date.now());
+assert.equal(emu.ui_active(), false);
+assert.equal(emu.key_down("KeyZ"), false, "controller keys are the page's");
+assert.equal(emu.key_down("Backquote"), true, "backquote opens the palette");
+assert.equal(emu.ui_active(), true);
+assert.deepEqual(Array.from(emu.overlay_size()), [720, 672]);
+assert.equal(emu.overlay_visible(), true);
+const overlay = emu.overlay_rgba();
+assert.ok(overlay instanceof Uint8ClampedArray, "overlay is a Uint8ClampedArray");
+assert.equal(overlay.length, 720 * 672 * 4);
+let opaque = 0;
+for (let i = 3; i < overlay.length; i += 4) if (overlay[i] > 0) opaque++;
+assert.ok(opaque > 1000, `overlay has alpha (${opaque} pixels)`);
+assert.equal(emu.key_down("KeyP"), true, "typing into the palette is consumed");
+assert.equal(emu.paused(), false);
+assert.equal(emu.key_down("Escape"), true);
+assert.equal(emu.ui_active(), false);
+assert.equal(emu.key_down("F1"), true, "F1 opens Help");
+assert.equal(emu.key_down("Escape"), true);
+
+// Rewind: snapshots recorded by run_frame, stepped back while Backspace
+// is held.
+const seconds = emu.rewind_seconds();
+assert.ok(seconds >= 0.5, `rewind buffer holds ${seconds} s`);
+assert.equal(emu.key_down("Backspace"), true);
+assert.equal(emu.rewinding(), true);
+emu.rewind_step();
+emu.rewind_step();
+assert.ok(emu.rewind_seconds() < seconds, "rewind_step consumes snapshots");
+emu.key_up("Backspace");
+assert.equal(emu.rewinding(), false);
+
+// F5 saves through the host and marks slot 1 dirty for the page.
+assert.deepEqual(Array.from(emu.take_dirty_slots()), []);
+assert.equal(emu.key_down("F5"), true);
+assert.deepEqual(Array.from(emu.take_dirty_slots()), [1]);
+assert.deepEqual(Array.from(emu.take_dirty_slots()), []);
+const slot1 = emu.slot_bytes(1);
+assert.equal(String.fromCharCode(...slot1.subarray(0, 4)), "NESS");
+assert.equal(emu.slot_bytes(2), undefined);
+assert.equal(emu.key_down("F7"), true);
+assert.equal(emu.slot(), 2);
+emu.set_slot_cache(2, slot1, Date.now());
+assert.deepEqual(Array.from(emu.take_dirty_slots()), []);
+assert.equal(emu.key_down("F8"), true);
+assert.equal(emu.overlay_visible(), true, "the Loaded slot toast shows");
+emu.osd_message("hello from the page");
+assert.equal(emu.osd_text(), "hello from the page");
+assert.equal(emu.take_cheats_dirty(), false);
+
 emu.free();
 console.log(
   `smoke ok: 60 frames in ${elapsed.toFixed(1)} ms ` +
