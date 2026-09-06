@@ -2,6 +2,34 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.10.0] - 2026-09-06
+
+Closes issues 30, 32 and 33: the in-app command palette, tool pages and
+cheat manager. Plan: docs/plans/TOOLS_AND_CHEATS.md.
+
+### Added
+- Command palette (backquote): type to filter, Enter runs, commands may take
+  an argument. Built-ins: pause, resume, frame advance, reset, mute, volume,
+  toggle overscan crop, help, quit. An 8x8 bitmap font drawn with SDL rects;
+  no new dependencies. See docs/debugging/UI_FRAMEWORK.md.
+- Tool pages behind a small Tool trait: Help, Cheats, Memory (hex dump with
+  paging and mem ADDR), PPU (pattern tables, nametables, palettes), APU
+  (per-channel mute with 1-5 keys and mute/unmute commands).
+- Cheat manager: the .cht file next to the ROM loads at startup and is
+  rewritten on every change; the page toggles, adds, deletes and edits;
+  palette commands cheat add CODE, cheat toggle N, cheat clear.
+- Headless UI checks: --screenshot PATH:N and --ui-script KEYS produce
+  screenshots of any page without a human; the PRs and docs carry them.
+- Library: Mapper::ppu_peek and System::peek_chr for read-only pattern
+  access; Apu per-channel mute flags.
+
+### Known issues
+- Typing a code with a colon or question mark in the palette maps ; and /
+  since key codes cannot see Shift; both are substituted automatically.
+- The palette panel is one column narrower than its fit test assumes.
+
+---
+
 ## [0.9.0] - 2026-09-06
 
 Closes issues 25, 26, 27 and 31. Test ROM status: 82 of 83 blargg suites
