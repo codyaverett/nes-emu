@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Type:** Feature Plan
-**Status:** Phases 1, 2, 3 and 5 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md, WASM_WEB_STORE.md, WASM_WEB_DEPLOY.md; Phase 5 pending its first tag deploy); Phase 4 open
+**Status:** Phases 1 to 5 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md, WASM_WEB_STORE.md, SHARED_OVERLAY_UI.md, WASM_WEB_DEPLOY.md; Phase 5 pending its first tag deploy)
 **Tracking:** GitHub issues listed per phase below
 
 ## Goal
@@ -61,12 +61,12 @@ browser. `.sav`, state slots and `.cht` text are stored in IndexedDB keyed
 by ROM CRC-32. The bundled `cheats/` files are converted to one JSON file
 at build time and fetched by the page.
 
-Overlay UI: the palette and tool pages draw through SDL calls today. Phase
-4 introduces a small `Painter` trait (`fill_rect`, `text`) used by every
-tool and the palette; the SDL frontend implements it with the canvas, the
-web frontend implements it by drawing into an RGBA overlay that the page
-composites over the frame. One UI code path, two backends. Until then the
-web page gets an HTML palette and cheat list, which is enough to play.
+Overlay UI: the palette and tool pages draw through a small `Painter`
+trait (`size`, `fill_rect`) used by every tool and the palette; the SDL
+frontend implements it with the canvas, the web frontend by drawing into
+an RGBA overlay that the page composites over the frame. One UI code path,
+two backends (Phase 4). The HTML slot and cheat controls from Phase 3
+remain alongside the pages.
 
 ## Phases
 
@@ -91,9 +91,11 @@ file so saves can move between machines. `web/storage.js`,
 `web/scripts/build-cheats.mjs`, verification in
 `docs/debugging/WASM_WEB_STORE.md`.
 
-### Phase 4: shared overlay UI (#52)
+### Phase 4: shared overlay UI (#52) - done (Chromium verified; feel and other browsers need a human pass)
 `Painter` trait, SDL and RGBA implementations, palette and every tool page
 running on both frontends, rewind on the web using the same ring buffer.
+Plan in `docs/plans/SHARED_OVERLAY_UI.md` (sub-issues #58-#61), notes and
+verification in `docs/debugging/SHARED_OVERLAY_UI.md`.
 
 ### Phase 5: deployment (#53) - done (pending first deploy)
 GitHub Pages workflow building with `wasm-pack build --release --target

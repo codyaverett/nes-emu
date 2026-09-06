@@ -14,7 +14,11 @@ npm run build && npm run serve   # then open http://127.0.0.1:8080/
 
 Click the screen or drop a `.nes` file on it. Keys match the SDL binary
 (listed under the canvas): F5 saves a state, F8 loads it, F6/F7 change
-the slot. Stats under the canvas show emulated fps, display rate, queued
+the slot, Backspace held rewinds, backquote opens the command palette
+and F1 the Help page. The palette and its pages (cheats, memory, ppu,
+apu, states) are the binary's own, drawn by the core into an overlay
+canvas (`docs/debugging/SHARED_OVERLAY_UI.md`); toasts appear there
+too. Stats under the canvas show emulated fps, display rate, queued
 audio and underruns; `window.nesStats` holds the same numbers for
 scripts.
 

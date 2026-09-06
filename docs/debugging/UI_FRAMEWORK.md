@@ -5,7 +5,9 @@
 **Status:** Complete; feel of the palette and key conflicts need a human
 **Tracking:** GitHub issue #30 (phase 1 of `docs/plans/TOOLS_AND_CHEATS.md`);
 argument commands and the Cheats page are issue #32 (phase 3); issue #33
-added the Memory, PPU and APU pages; issue #44 added rewind
+added the Memory, PPU and APU pages; issue #44 added rewind; issue #52
+moved the UI into the library and onto the web page
+(`docs/debugging/SHARED_OVERLAY_UI.md`)
 
 ## Executive Summary
 
@@ -13,21 +15,33 @@ The SDL binary had no text rendering and no UI state: every key went
 straight to a hotkey or the controller. It now has a small UI layer under
 `src/ui/` that draws text with an embedded 8x8 font, opens a command
 palette on the backquote key, and shows full-window tool pages (the first
-is Help). The emulator library is untouched; everything lives in the
-binary. No new crate dependencies.
+is Help). No new crate dependencies.
+
+Since issue #52 the UI is part of the `nes_emu` library (`nes_emu::ui`)
+and runs unchanged on the web page: it draws through a `Painter`, takes
+a frontend-neutral `Key`, and keeps slots and cheats through a `Host`.
+The SDL binary supplies `SdlPainter`, `sdl_key` and `FileHost`; the web
+page an `RgbaPainter` overlay, `Key::from_browser_code` and `WebHost`
+(`docs/debugging/SHARED_OVERLAY_UI.md`).
 
 Two debug flags make the UI checkable without a human at the keyboard:
 `--screenshot PATH:N` writes the composed window as PPM on frame N, and
 `--ui-script KEYS` injects key presses one per frame from frame 30. Both
 were used to produce the screenshots in
-`docs/testing/test_output/ui/`.
+`docs/testing/test_output/ui/`, and `scripts/ui_screenshots.sh` runs
+them for every page and hashes the result (see The screenshot harness).
 
 ## Architecture
 
 ```
-src/main.rs            SDL setup, frame loop, key routing, flags
-src/ui/mod.rs          Ui: Game | Palette | Tool state machine, KEY_BINDINGS
-src/ui/app.rs          App: System, audio handles, paused/frame_advance/crop/quit
+src/main.rs            SDL setup, frame loop, SdlPainter, Keycode -> Key, FileHost, flags
+src/ui/mod.rs          Ui: Game | Palette | Tool state machine, key_down/key_up (shared
+                       hotkeys), draw_messages, KEY_BINDINGS, WINDOW_SCALE
+src/ui/app.rs          App: System, audio handles, paused/frame_advance/crop/quit,
+                       host: Box<dyn Host>, now_ms clock, slots, cheats, rewind
+src/ui/painter.rs      Color, Painter { size, fill_rect }, RgbaPainter
+src/ui/key.rs          Key enum, printable, digit, from_browser_code
+src/ui/host.rs         SlotInfo, Host trait, FileHost (<rom>.sN, <rom>.cht)
 src/ui/font.rs         8x8 font for ASCII 32-126, draw_text, text_width
 src/ui/commands.rs     Command { name, description, action }, builtin_commands
 src/ui/palette.rs      Palette overlay: input, subsequence filter, selection
@@ -38,16 +52,52 @@ src/ui/tools/cheats.rs Cheats page: list, toggle, add, delete, edit
 src/ui/tools/memory.rs Memory page: hex dump of CPU space (issue 33)
 src/ui/tools/ppu.rs    PPU page: pattern tables, nametables, palettes
 src/ui/tools/apu.rs    APU page: per-channel mute state
+src/ui/tools/states.rs States page: the nine slots through the Host
+web/src/host.rs        WebHost: in-memory slots with dirty flags for IndexedDB
+web/src/lib.rs         Emulator owns App, Ui and an RgbaPainter; key and overlay exports
 ```
+
+### Painter, Key and Host
+
+Every draw is a filled rectangle: text is one rectangle per set font
+pixel (`font::draw_text`), page chrome and the palette are a few more,
+the PPU page blits its images as horizontal runs. `Painter` is exactly
+that (`size()` and `fill_rect(x, y, w, h, colour)`), so the backends
+have nothing to reinterpret: `SdlPainter` in `main.rs` forwards each
+call to `set_draw_color` plus `WindowCanvas::fill_rect`, the sequence
+the code made before the trait existed, and the harness hashes prove
+the pixels did not move. `RgbaPainter` is an in-memory RGBA surface
+with source-over blending and clipping (unit tests in `painter.rs`);
+the web page uploads it to a canvas over the game frame.
+
+`Key` is what the UI matches on: `Char(c)` for printable ASCII (lower
+case letters, Space is `Char(' ')`), the named keys the pages use
+(Backquote, Escape, Return, Backspace, Delete, Insert, Tab, arrows,
+PageUp/Down, Home, End, F1-F8) and `Other`. `main::sdl_key` maps SDL
+codes 32..=126 to `Char` (SDL numbers them by their character) and the
+named keys one to one; `Key::from_browser_code` maps `KeyboardEvent.code`
+(`KeyA`, `Digit3`, `Equal`, `ArrowUp`, `NumpadEnter` ...). Neither sees
+Shift, which is why the palette is case-insensitive and cheat codes type
+`:` as `;`.
+
+`Host` is what the UI needs from outside the emulator: `write_state`,
+`read_state`, `slot_info` (mtime and size for the States page),
+`slot_label` (`mario.s3`), `write_cheats` (the `.cht` text) and
+`cheats_label` (`mario.cht`). `FileHost` keeps the files next to the ROM
+as before and is compiled only outside wasm32.
 
 ### Key routing
 
-Every key press goes to `main::key_down`, which calls `Ui::handle_key`
-first. In `Game` mode the UI only claims the backquote (opens the
-palette) and returns false, so the hotkeys (Escape, F1, P, N, R, M, Plus,
-Minus) and the controller mapping run. In `Palette` and `Tool` modes the
-UI consumes every press. Key releases always reach the controller so a
-direction held when the palette opened does not stick.
+Every key press goes to `main::key_down`, which maps it to a `Key` and
+calls `Ui::key_down`. That routes the key to the palette or the open
+page first (they consume every press, so an unmapped key never reaches
+the controller while a page is open), then to the shared hotkeys (F1,
+R, P, N, M, Plus/Equals, Minus, F5-F8, Backspace) and returns true when
+the key was used. Only then does `main` skip its own Escape (quit) and
+the controller mapping. Key releases go to `Ui::key_up` (ends a rewind)
+and always reach the controller so a direction held when the palette
+opened does not stick. The web page does the same in `keyDown`: the
+core first, then its controller table, then F for fullscreen.
 
 Escape closes the palette or tool; in `Game` mode it still quits, as it
 always did. Pressing Escape twice from inside the palette therefore exits
@@ -58,17 +108,21 @@ the emulator.
 `App` (`src/ui/app.rs`) owns the `System`, the audio queue and the
 mute/volume handles the audio callback reads, plus `paused`,
 `frame_advance`, `crop_enabled`, `crop_dirty`, `quit_requested`,
-`osd_until`, `save_path`, the command registry and the rewind ring
-buffer (`rewind_buffer`, `rewind_recording`, `rewinding`; see Rewind
-below). Commands and tools mutate it through methods (`pause`, `resume`,
-`request_frame_advance`, `reset`, `toggle_mute`, `volume_up`,
-`volume_down`, `toggle_crop`, `quit`, `rewind_command`). The frame loop
-reads the flags: it loads one snapshot per frame while `rewinding`,
-skips emulation while paused
-(running exactly one frame when `frame_advance` is set), resizes the
-window and recreates `src_rect` when `crop_dirty` is set, and leaves the
-loop when `quit_requested` is set so the battery flush on exit still
-runs. The audio device, texture and canvas stay in `main`.
+`osd_until`, the `host`, the `now_ms` clock, the command registry and
+the rewind ring buffer (`rewind_buffer`, `rewind_recording`,
+`rewinding`; see Rewind below). Commands and tools mutate it through
+methods (`pause`, `resume`, `request_frame_advance`, `reset`,
+`toggle_mute`, `volume_up`, `volume_down`, `toggle_crop`, `quit`,
+`rewind_command`). The frame loop sets `now_ms` first (toasts and the
+volume bar expire against it; `Instant` in the binary, `Date.now()` on
+the web), then reads the flags: it calls `rewind_frame` while
+`rewinding`, skips emulation while paused (running exactly one frame
+when `frame_advance` is set), resizes the window and recreates the
+source rectangle when `crop_dirty` is set, and leaves the loop when
+`quit_requested` is set so the battery flush on exit still runs. The
+audio device, texture, canvas and the battery `.sav` path stay in
+`main`. `ui::draw_messages` draws the volume bar, the current toast or
+the paused reminder before `Ui::draw`.
 
 ### Font
 
@@ -96,8 +150,8 @@ built-in descriptions inside that.
 ```rust
 pub trait Tool {
     fn title(&self) -> &str;
-    fn handle_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent;
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String>;
+    fn handle_key(&mut self, key: Key, app: &mut App) -> ToolEvent;
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String>;
     fn tick(&mut self, _app: &mut App) {}
 }
 ```
@@ -364,13 +418,14 @@ at 1x.
 
 ### Holding Backspace
 
-`main::key_down` routes Backspace in `Game` mode to `App::rewind_start`,
-which sets `rewinding`; `key_up` calls `rewind_stop` from any mode
+`Ui::key_down` routes Backspace in `Game` mode to `App::rewind_start`,
+which sets `rewinding`; `Ui::key_up` calls `rewind_stop` from any mode
 (harmless when the press went to the palette, where Backspace deletes
 text, or to a page). SDL repeats key-down events while a key is held,
 so `rewind_start` is idempotent.
 
-While `rewinding` the main loop, before the paused and normal branches:
+While `rewinding` the main loop, before the paused and normal branches,
+calls `App::rewind_frame` (shared with the web page), which:
 
 1. clears the audio queue, so the device callback keeps repeating its
    last sample (silence) instead of playing audio that belongs to
@@ -483,8 +538,9 @@ physically held keys on release.
 | Period / Comma | Player 2 Start / Select |
 | I / J / K / L | Player 2 D-pad (Up / Left / Down / Right) |
 
-Player 2 keys (issue #42) collide with no hotkey in `main::key_down`
-(Escape, F1, R, P, N, M, Plus, Minus, F5-F8) nor with the backquote.
+Player 2 keys (issue #42) collide with no hotkey in `Ui::key_down`
+(F1, R, P, N, M, Plus, Minus, F5-F8, Backspace), nor with Escape or the
+backquote.
 The page-local keys (Q, A/E/D on Cheats, 1-5 view toggles) and palette
 typing only run in `Tool` and `Palette` mode, where the UI consumes the
 press before the controller map is consulted, so typing `l` or `;` in
@@ -507,6 +563,30 @@ volume down, toggle overscan crop, help, quit, cheats, cheat add CODE,
 cheat toggle N, cheat clear, mem [ADDR], ppu, apu, mute pulse1, mute
 pulse2, mute triangle, mute noise, mute dmc, unmute all, save state [N],
 load state [N], slot [N], states, rewind [N | on | off].
+
+## The screenshot harness
+
+`scripts/ui_screenshots.sh ROM OUTDIR` (issue #52) turns the two flags
+below into a regression check for the drawing code:
+
+1. copies the ROM into OUTDIR and writes `<rom>.cht` (`SXIOPO`) and
+   `<rom>.s1..s3` (15098 zero bytes) next to it with
+   `TZ=UTC touch -t 202601010000`, so the Cheats and States pages show
+   fixed content (the States page prints the mtime in UTC);
+2. runs `cargo build` and the binary twice with `--no-audio`: the
+   palette/help script from Debug flags below, and a script that visits
+   Memory (two pages), the three PPU views, APU (with two channels muted,
+   then unmuted from the palette), Cheats, States (plus a cursor move), a
+   `Slot 2 (saved)` toast after F7, a `Backspace*40` rewind frame and the
+   Help page after the rewind;
+3. prints `shasum -a 256` of the 15 PPMs (also in `OUTDIR/hashes.txt`).
+
+The scripts only view and navigate, never save or add, so nothing in
+OUTDIR changes during a run and two runs on one tree agree. A refactor
+of the drawing path must reproduce the hashes exactly; the Painter, Key
+and Host phases each did (`docs/debugging/SHARED_OVERLAY_UI.md`). ROMs
+stay outside the repository: point the script at a copy in a scratch
+directory. `NES_EMU_BIN` overrides the binary.
 
 ## Debug flags
 

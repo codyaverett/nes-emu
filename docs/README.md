@@ -18,18 +18,20 @@ Contains debugging session notes and references:
 - `TETRIS_MMC1_FIX.md` - Tetris garbled tiles traced to an archaic DiskDude iNES header read as mapper 65; header sanitising in the cartridge loader (#22)
 - `BATTERY_SAVES.md` - Battery-backed PRG RAM persisted to a .sav file next to the ROM; Mapper prg_ram accessors, System::load_battery/save_battery, hash-based dirty flush (#26)
 - `CHEAT_ENGINE.md` - Game Genie and raw code decoding, ROM-read and per-frame RAM-freeze hooks in System, .cht file format, headless SMB SXIOPO proof (#31)
-- `UI_FRAMEWORK.md` - In-window UI for the SDL binary: 8x8 bitmap font, command palette, Tool trait and Help page, App state, --screenshot and --ui-script debug flags (#30)
+- `UI_FRAMEWORK.md` - In-window UI shared by the SDL binary and the web page: 8x8 bitmap font, command palette, Tool trait and pages, App state, Painter/Key/Host, --screenshot and --ui-script debug flags and the screenshot harness (#30, #52)
 - `SAVE_STATES.md` - Whole-machine save states: the NESS section format field by field, Snapshot trait and Mapper save/load hooks, F5/F8 slots and the States page, the field audit method (#39)
 - `WASM_WEB_BUILD.md` - SDL behind a cargo feature, the web/ wasm-bindgen wrapper crate, the 1 MB wasm stack overflow and its fix, Node smoke test and CI (#49)
 - `WASM_WEB_PAGE.md` - The browser page: canvas crop, AudioWorklet ring and audio-clocked pacing, key map, headless Chromium verification, the detached-buffer pacing bug (#50)
 - `WASM_WEB_DEPLOY.md` - GitHub Pages workflow on version tags, the site layout, the 500 KB wasm size budget and debug-info check (npm run check-size), local verification of the assembled site (#53)
 - `WASM_WEB_STORE.md` - IndexedDB store keyed by ROM CRC-32 for battery RAM, nine state slots and cheats, the bundled cheats.json build step, HTML slot and cheat controls, export and import, headless verification (#51)
+- `SHARED_OVERLAY_UI.md` - The overlay UI moved into the library behind Painter, Key and Host; SDL screenshot harness and baseline hashes, the RGBA overlay canvas on the web page, keys through key_down, rewind and slots on the web, headless verification (#52, #58-#61)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
 - `ACCURACY_ROADMAP.md` - Phased plan to reach test-ROM compliance (GitHub issues #1-#5)
 - `TOOLS_AND_CHEATS.md` - Command palette, tool pages and cheat engine (issues #30-#33)
 - `WASM_WEB.md` - Running the emulator in a web page through WebAssembly (issues #49-#53)
+- `SHARED_OVERLAY_UI.md` - Painter, Key and Host abstractions that move the overlay UI into the library for both frontends (issue #52, sub-issues #58-#61)
 
 ### `/testing/`
 Contains testing guides and documentation:
@@ -46,6 +48,7 @@ Contains test output files (screenshots and debug logs):
 - `test_frame_*_debug.txt` - Debug text output for corresponding frames
 - `ui/palette.png`, `ui/help.png` - Command palette and Help page captured with --screenshot (#30)
 - `ui/states.png`, `ui/states-cursor.png`, `ui/states-osd.png`, `ui/states-loaded.png` - States page and the save/load OSD lines (#39)
+- `ui/web-palette.png` - The same command palette drawn by the web page's overlay canvas (#52); `ui/palette.png` is the SDL one
 - `web/smb-chromium.png` - The web page playing SMB in headless Chromium (#50)
 
 ### `/summaries/`

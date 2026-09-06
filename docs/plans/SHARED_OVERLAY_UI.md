@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Type:** Refactor Plan
-**Status:** Proposed; sub-issues filed per phase
+**Status:** Implemented (#58, #59, #60, #61 on branch issue-52-shared-ui; docs/debugging/SHARED_OVERLAY_UI.md); Phase 6 CHANGELOG and version bump happen at merge
 **Tracking:** GitHub issue #52 (Phase 4 of `docs/plans/WASM_WEB.md`) and the sub-issues listed per phase
 
 ## Goal

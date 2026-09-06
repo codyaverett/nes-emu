@@ -24,6 +24,9 @@
     width: 100%; height: 100%; display: block;
     image-rendering: pixelated; image-rendering: crisp-edges;
   }
+  /* The shared overlay UI (palette, pages, toasts) drawn by the core at
+     the SDL window size and scaled over the frame. */
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
   #gate {
     position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 8px;
@@ -31,12 +34,6 @@
   }
   #gate.drag { outline: 3px dashed #6cf; }
   #gate[hidden] { display: none; }
-  #toast {
-    position: absolute; left: 8px; bottom: 8px; padding: 4px 8px;
-    background: rgba(0,0,0,.7); color: #fff; font-family: monospace;
-    pointer-events: none; transition: opacity .3s;
-  }
-  #toast[hidden] { display: none; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
   button, label.btn {
     background: #222; color: #ddd; border: 1px solid #555; padding: 6px 12px;
@@ -84,11 +81,11 @@
 <h1>nes-emu</h1>
 <div id="screen-wrap">
   <canvas id="screen" width="240" height="224"></canvas>
+  <canvas id="overlay" width="720" height="672"></canvas>
   <div id="gate">
     <strong>Drop a .nes file here or click to choose one</strong>
     <span>Nothing is uploaded; the ROM stays in this tab.</span>
   </div>
-  <div id="toast" hidden></div>
 </div>
 <div class="row">
   <label class="btn">Open ROM<input id="rom-input" type="file" accept=".nes,application/octet-stream"></label>
@@ -102,8 +99,9 @@
 <div id="keys">
   Player 1: <kbd>Z</kbd> A, <kbd>X</kbd> B, <kbd>Right Shift</kbd> Select, <kbd>Enter</kbd> Start, arrows.
   Player 2: <kbd>'</kbd> A, <kbd>;</kbd> B, <kbd>,</kbd> Select, <kbd>.</kbd> Start, <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd>.
-  <kbd>R</kbd> reset, <kbd>P</kbd> pause, <kbd>M</kbd> mute, <kbd>F</kbd> fullscreen.
-  <kbd>F5</kbd> save state, <kbd>F8</kbd> load state, <kbd>F6</kbd>/<kbd>F7</kbd> change slot.
+  <kbd>R</kbd> reset, <kbd>P</kbd> pause, <kbd>N</kbd> frame advance, <kbd>M</kbd> mute, <kbd>+</kbd>/<kbd>-</kbd> volume, <kbd>F</kbd> fullscreen.
+  <kbd>F5</kbd> save state, <kbd>F8</kbd> load state, <kbd>F6</kbd>/<kbd>F7</kbd> change slot, hold <kbd>Backspace</kbd> to rewind.
+  <kbd>`</kbd> command palette (cheats, memory, ppu, apu, states pages), <kbd>F1</kbd> help.
 </div>
 <div id="panels">
   <section class="panel" id="panel-states">

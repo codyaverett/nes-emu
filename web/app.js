@@ -1,14 +1,22 @@
 // Browser front end for nes-emu (issue #50, docs/plans/WASM_WEB.md).
 //
 // The core runs in wasm (web/src/lib.rs). This file owns the canvas, the
-// audio pipeline, input mapping and pacing. Audio is the master clock,
-// as in src/main.rs: each animation frame emulates until roughly
+// audio pipeline, the controller mapping and pacing. Audio is the master
+// clock, as in src/main.rs: each animation frame emulates until roughly
 // AUDIO_TARGET samples are queued ahead of the AudioWorklet, at most
 // MAX_FRAMES_PER_TICK frames, so the display refresh rate never changes
 // the game speed. Stats are exposed on window.nesStats for headless
 // checks (see docs/debugging/WASM_WEB_PAGE.md). Battery RAM, state
 // slots and cheats persist in IndexedDB through storage.js, keyed by
 // ROM CRC-32 (docs/debugging/WASM_WEB_STORE.md).
+//
+// The command palette, the tool pages, the hotkeys (R, P, N, M, +/-,
+// F1, F5-F8, Backspace rewind), toasts and rewind live in the core's
+// shared UI (docs/plans/SHARED_OVERLAY_UI.md): every key goes to
+// emu.key_down before the controller table, the overlay canvas shows
+// emu.overlay_rgba, and the page mirrors pause, mute, volume, crop and
+// slot from the core into its controls once per tick. Slot and cheat
+// writes made by the UI reach IndexedDB through the dirty flags.
 import init, { Emulator, Button, core_version } from "./pkg/nes_emu_web.js";
 import { openStore, crcKey, SLOTS } from "./storage.js";
 
@@ -46,9 +54,10 @@ const KEYS = {
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen");
 const ctx2d = canvas.getContext("2d");
+const overlay = $("overlay");
+const overlay2d = overlay.getContext("2d");
 const wrap = $("screen-wrap");
 const gate = $("gate");
-const toastEl = $("toast");
 const statsEl = $("stats");
 
 const stats = {
@@ -64,19 +73,27 @@ const stats = {
   audio: "off",
   paused: false,
   muted: false,
+  volume: 1,
   crop: true,
   error: null,
   crc: null, // eight hex digits, the store key
   slot: 1,
   batteryFlushes: 0,
   cheatsSeeded: false,
+  rewinding: false,
+  uiActive: false,
+  overlayVisible: false,
+  overlayDraws: 0,
+  slotWrites: 0,
+  cheatWrites: 0,
 };
 window.nesStats = stats;
 
 let emu = null;
 let store = null; // storage.js API, opened at boot (null if IndexedDB failed)
 let image = new ImageData(FRAME_W, FRAME_H);
-let toastTimer = null;
+let overlayImage = null; // ImageData sized to emu.overlay_size()
+let overlayShown = false; // the overlay canvas has content to clear
 
 // ---------------------------------------------------------------- audio
 
@@ -165,20 +182,114 @@ function present() {
   ctx2d.putImageData(image, off, off);
 }
 
-function setCrop(crop) {
+/** Size the canvases for the crop state; the core is the source of
+ *  truth (emu.crop_enabled), this only mirrors it into the DOM. */
+function applyCrop(crop) {
   stats.crop = crop;
   canvas.width = crop ? FRAME_W - 2 * OVERSCAN : FRAME_W;
   canvas.height = crop ? FRAME_H - 2 * OVERSCAN : FRAME_H;
   wrap.classList.toggle("full-frame", !crop);
   $("btn-crop").textContent = crop ? "Full frame" : "Crop overscan";
-  if (emu) present();
+  if (emu) {
+    const [w, h] = emu.overlay_size();
+    if (overlay.width !== w || overlay.height !== h) {
+      overlay.width = w;
+      overlay.height = h;
+      overlayImage = new ImageData(w, h);
+    }
+    present();
+    presentOverlay();
+  }
 }
 
+function setCrop(crop) {
+  if (emu) emu.set_crop(crop);
+  else applyCrop(crop);
+}
+
+/** Draw the shared overlay (palette, pages, toasts, the volume bar)
+ *  when the core has something to show, else clear it once. */
+function presentOverlay() {
+  if (!emu) return;
+  const visible = emu.overlay_visible();
+  stats.overlayVisible = visible;
+  if (visible) {
+    if (!overlayImage || overlayImage.width !== overlay.width || overlayImage.height !== overlay.height) {
+      overlayImage = new ImageData(overlay.width, overlay.height);
+    }
+    overlayImage.data.set(emu.overlay_rgba());
+    overlay2d.putImageData(overlayImage, 0, 0);
+    overlayShown = true;
+    stats.overlayDraws++;
+  } else if (overlayShown) {
+    overlay2d.clearRect(0, 0, overlay.width, overlay.height);
+    overlayShown = false;
+  }
+}
+
+/** A toast through the shared overlay; before a ROM is loaded there is
+ *  no overlay, so it goes to the console. `ms` is kept for callers; the
+ *  core's toast duration applies. */
 function toast(text, ms = 1500) {
-  toastEl.textContent = text;
-  toastEl.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (toastEl.hidden = true), ms);
+  void ms;
+  if (emu) emu.osd_message(text);
+  else console.log(`[nes] ${text}`);
+}
+
+/** Mirror the core's run-control state into the page's controls. */
+function syncControls() {
+  const paused = emu.paused();
+  if (paused !== stats.paused) {
+    stats.paused = paused;
+    $("btn-pause").textContent = paused ? "Resume" : "Pause";
+    clearAudio();
+  }
+  const muted = emu.muted();
+  const volume = emu.volume();
+  if (muted !== stats.muted || volume !== stats.volume) {
+    stats.muted = muted;
+    stats.volume = volume;
+    if (audio.gain) audio.gain.gain.value = muted ? 0 : volume;
+    $("btn-mute").textContent = muted ? "Unmute" : "Mute";
+  }
+  const crop = emu.crop_enabled();
+  if (crop !== stats.crop) applyCrop(crop);
+  const slot = emu.slot();
+  if (slot !== stats.slot) {
+    stats.slot = slot;
+    for (const li of slotsEl.children) li.classList.toggle("active", Number(li.dataset.slot) === slot);
+  }
+  stats.uiActive = emu.ui_active();
+  const rewinding = emu.rewinding();
+  if (rewinding && !stats.rewinding) clearAudio();
+  stats.rewinding = rewinding;
+}
+
+/** Persist what the shared UI changed: dirty slots and the cheat text. */
+function persistDirty() {
+  if (!emu) return;
+  const slots = emu.take_dirty_slots();
+  for (const slot of slots) {
+    const bytes = emu.slot_bytes(slot);
+    stats.slotWrites++;
+    if (store && stats.crc && bytes) {
+      store.setState(stats.crc, slot, bytes, stats.core).then(refreshSlots, (err) => {
+        console.error("[nes] state store failed:", err);
+        toast(`Store failed: ${err}`, 4000);
+      });
+    }
+  }
+  if (emu.take_cheats_dirty()) {
+    stats.cheatWrites++;
+    stats.cheatsSeeded = false;
+    if (store && stats.crc) {
+      store.setCheats(stats.crc, emu.cheats_text()).catch((err) => {
+        console.error("[nes] cheat save failed:", err);
+        toast(`Cheat save failed: ${err}`, 4000);
+      });
+    }
+    renderCheats();
+  }
 }
 
 // ---------------------------------------------------------------- loop
@@ -191,7 +302,24 @@ function tick(now) {
   requestAnimationFrame(tick);
   if (!emu) return;
   stats.ticks++;
-  if (!stats.paused) {
+  emu.set_now_ms(Date.now());
+  emu.tick();
+  syncControls();
+  if (stats.rewinding) {
+    // Backspace held: one snapshot back per display frame, no emulation
+    // (App::rewind_frame drops the core's audio queue; ours was cleared
+    // when the rewind started).
+    emu.rewind_step();
+    emu.take_audio();
+    present();
+  } else if (stats.paused) {
+    if (emu.take_frame_advance()) {
+      emu.run_frame();
+      emu.take_audio();
+      stats.frames++;
+      present();
+    }
+  } else {
     let ran = 0;
     if (audio.ready && audio.ctx.state === "running") {
       while (queuedAudio() < AUDIO_TARGET && ran < MAX_FRAMES_PER_TICK) {
@@ -207,6 +335,8 @@ function tick(now) {
     stats.frames += ran;
     if (ran > 0) present();
   }
+  presentOverlay();
+  persistDirty();
   stats.queued = Math.round(queuedAudio());
   if (now - lastStatsTime >= 1000) {
     const dt = (now - lastStatsTime) / 1000;
@@ -248,6 +378,7 @@ async function loadRomFile(file) {
     console.error("[nes] load failed:", err);
     return;
   }
+  next.set_now_ms(Date.now());
   await flushBattery(false);
   if (emu) emu.free();
   emu = null;
@@ -259,7 +390,12 @@ async function loadRomFile(file) {
   stats.crc = crc;
   stats.frames = 0;
   stats.paused = false;
+  stats.slot = 1;
+  stats.rewinding = false;
+  overlayShown = true; // force one clear of whatever the last ROM drew
   $("btn-pause").textContent = "Pause";
+  applyCrop(emu.crop_enabled());
+  if (audio.gain) audio.gain.gain.value = emu.muted() ? 0 : emu.volume();
   clearAudio();
   gate.hidden = true;
   document.title = `${file.name} - nes-emu`;
@@ -286,6 +422,12 @@ async function restoreFromStore(target, crc, name) {
         if (target.set_battery(saved)) console.log(`[nes] battery restored: ${saved.length} bytes`);
         else console.warn(`[nes] stored battery RAM (${saved.length} bytes) does not fit this board`);
       }
+    }
+    // The shared UI's States page and F8 read the slot cache; fill it
+    // from the store so the first frames already know the slots.
+    for (const s of await store.listStates(crc)) {
+      const rec = await store.getState(crc, s.slot);
+      if (rec) target.set_slot_cache(s.slot, rec.bytes, rec.at ?? 0);
     }
     let text = await store.getCheats(crc);
     if (text === null) {
@@ -391,26 +533,34 @@ function formatTime(ms) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function setSlot(slot, announce = true) {
-  stats.slot = Math.min(SLOTS, Math.max(1, slot));
-  for (const li of slotsEl.children) li.classList.toggle("active", Number(li.dataset.slot) === stats.slot);
-  if (announce) toast(`Slot ${stats.slot}`);
+/** Pick the current slot in the core (it toasts "Slot N (saved|empty)");
+ *  the list highlight follows on the next tick. */
+function setSlot(slot) {
+  slot = Math.min(SLOTS, Math.max(1, slot));
+  if (emu) emu.set_slot(slot);
+  else stats.slot = slot;
+  for (const li of slotsEl.children) li.classList.toggle("active", Number(li.dataset.slot) === slot);
 }
 
 const prevSlot = () => setSlot(stats.slot <= 1 ? SLOTS : stats.slot - 1);
 const nextSlot = () => setSlot(stats.slot >= SLOTS ? 1 : stats.slot + 1);
 
+/** Save through the shared UI (the same path as F5), then persist the
+ *  dirty slot at once so callers can await the store. */
 async function saveState(slot = stats.slot) {
   if (!emu) return false;
   if (!store) {
     toast("No store: IndexedDB unavailable", 3000);
     return false;
   }
+  emu.save_slot(slot);
+  stats.slot = slot;
+  const bytes = emu.slot_bytes(slot);
+  if (!bytes) return false;
   try {
-    const bytes = emu.save_state();
+    emu.take_dirty_slots(); // persisted here rather than by the tick
     await store.setState(stats.crc, slot, bytes, stats.core);
-    stats.slot = slot;
-    toast(`Saved slot ${slot}`);
+    stats.slotWrites++;
     await refreshSlots();
     return true;
   } catch (err) {
@@ -420,38 +570,23 @@ async function saveState(slot = stats.slot) {
   }
 }
 
+/** Load through the shared UI (the same path as F8) from the slot
+ *  cache, which mirrors the store. */
 async function loadState(slot = stats.slot) {
   if (!emu) return false;
-  if (!store) {
-    toast("No store: IndexedDB unavailable", 3000);
-    return false;
-  }
+  const had = emu.slot_bytes(slot) !== undefined;
+  emu.load_slot(slot);
   stats.slot = slot;
-  try {
-    const rec = await store.getState(stats.crc, slot);
-    if (!rec) {
-      toast(`Slot ${slot} is empty`);
-      setSlot(slot, false);
-      return false;
-    }
-    emu.load_state(rec.bytes);
-    clearAudio();
-    present();
-    const tag = rec.core && rec.core !== stats.core ? ` (saved by v${rec.core})` : "";
-    toast(`Loaded slot ${slot}${tag}`);
-    setSlot(slot, false);
-    return true;
-  } catch (err) {
-    console.error("[nes] load state failed:", err);
-    toast(`Load failed: ${err}`, 4000);
-    setSlot(slot, false);
-    return false;
-  }
+  clearAudio();
+  present();
+  setSlot(slot);
+  return had;
 }
 
 async function deleteState(slot = stats.slot) {
   if (!emu || !store) return false;
   await store.deleteState(stats.crc, slot);
+  emu.clear_slot_cache(slot);
   toast(`Deleted slot ${slot}`);
   await refreshSlots();
   return true;
@@ -696,24 +831,20 @@ for (const el of [wrap, document.body]) {
 
 function setPaused(paused) {
   if (!emu) return;
-  stats.paused = paused;
-  $("btn-pause").textContent = paused ? "Resume" : "Pause";
-  toast(paused ? "Paused" : "Resumed");
-  clearAudio();
+  emu.set_paused(paused);
+  syncControls();
 }
 
 function setMuted(muted) {
-  stats.muted = muted;
-  if (audio.gain) audio.gain.gain.value = muted ? 0 : 1;
-  $("btn-mute").textContent = muted ? "Unmute" : "Mute";
-  toast(muted ? "Muted" : "Sound on");
+  if (!emu) return;
+  if (emu.muted() !== muted) emu.toggle_mute();
+  syncControls();
 }
 
 function reset() {
   if (!emu) return;
   emu.reset();
   clearAudio();
-  toast("Reset");
 }
 
 function toggleFullscreen() {
@@ -737,40 +868,46 @@ function typing(e) {
   return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && t.type !== "checkbox";
 }
 
+/** A key press by KeyboardEvent.code: the shared UI first (palette,
+ *  pages, hotkeys; it consumes everything while a page is open, and
+ *  F5-F8 only with a ROM so an empty page still reloads on F5), then
+ *  the controller table, then F for fullscreen. Returns true when the
+ *  key was used. */
+function keyDown(code) {
+  if (emu && emu.key_down(code)) {
+    syncControls();
+    return true;
+  }
+  const map = KEYS[code];
+  if (map && emu) {
+    emu.set_button(map[0], map[1], true);
+    return true;
+  }
+  if (code === "KeyF") {
+    toggleFullscreen();
+    return true;
+  }
+  return false;
+}
+
+function keyUp(code) {
+  if (emu) emu.key_up(code);
+  const map = KEYS[code];
+  if (map && emu) {
+    emu.set_button(map[0], map[1], false);
+    return true;
+  }
+  return false;
+}
+
 window.addEventListener("keydown", (e) => {
   resumeAudioOnGesture();
   if (e.repeat || typing(e)) return;
-  // State keys work with a ROM only, so F5 still reloads an empty page.
-  if (emu) {
-    switch (e.code) {
-      case "F5": e.preventDefault(); saveState(); return;
-      case "F6": e.preventDefault(); prevSlot(); return;
-      case "F7": e.preventDefault(); nextSlot(); return;
-      case "F8": e.preventDefault(); loadState(); return;
-    }
-  }
-  const map = KEYS[e.code];
-  if (map && emu) {
-    emu.set_button(map[0], map[1], true);
-    e.preventDefault();
-    return;
-  }
-  switch (e.code) {
-    case "KeyR": reset(); break;
-    case "KeyP": setPaused(!stats.paused); break;
-    case "KeyM": setMuted(!stats.muted); break;
-    case "KeyF": toggleFullscreen(); break;
-    default: return;
-  }
-  e.preventDefault();
+  if (keyDown(e.code)) e.preventDefault();
 });
 window.addEventListener("keyup", (e) => {
   if (typing(e)) return;
-  const map = KEYS[e.code];
-  if (map && emu) {
-    emu.set_button(map[0], map[1], false);
-    e.preventDefault();
-  }
+  if (keyUp(e.code)) e.preventDefault();
 });
 window.addEventListener("blur", () => emu?.release_all());
 document.addEventListener("visibilitychange", () => {
@@ -836,13 +973,41 @@ window.nesApp = {
     return h.toString(16).padStart(8, "0");
   },
   setPaused,
+  // Shared UI hooks (docs/plans/SHARED_OVERLAY_UI.md).
+  keyDown,
+  keyUp,
+  presentOverlay,
+  persistDirty,
+  syncControls,
+  /** The toast the core is showing, or "" (replaces reading #toast). */
+  osdText() {
+    return (emu && emu.osd_text()) || "";
+  },
+  /** Count of overlay pixels with non-zero alpha, from the canvas. */
+  overlayAlphaPixels() {
+    const data = overlay2d.getImageData(0, 0, overlay.width, overlay.height).data;
+    let n = 0;
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 0) n++;
+    return n;
+  },
+  /** The frame with the overlay composited, as a PNG data URL. */
+  composite() {
+    const out = document.createElement("canvas");
+    out.width = overlay.width;
+    out.height = overlay.height;
+    const c = out.getContext("2d");
+    c.imageSmoothingEnabled = false;
+    c.drawImage(canvas, 0, 0, out.width, out.height);
+    c.drawImage(overlay, 0, 0);
+    return out.toDataURL("image/png");
+  },
 };
 
 // ---------------------------------------------------------------- boot
 
 await init();
 stats.core = core_version();
-setCrop(true);
+applyCrop(true);
 try {
   store = await openStore();
   window.nesStore = store;

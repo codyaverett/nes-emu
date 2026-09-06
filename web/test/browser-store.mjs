@@ -114,7 +114,7 @@ try {
     const rec = await window.nesStore.getState(window.nesStats.crc, 1);
     const li = document.querySelector('#slots li[data-slot="1"]');
     const empty = await app.loadState(5);
-    return { saved, loaded, h1, moved, h2, core: rec.core, size: rec.bytes.length, at: rec.at, li: li.textContent, active: li.classList.contains("active"), empty, toast: document.getElementById("toast").textContent, slot: window.nesStats.slot };
+    return { saved, loaded, h1, moved, h2, core: rec.core, size: rec.bytes.length, at: rec.at, li: li.textContent, active: li.classList.contains("active"), empty, toast: window.nesApp.osdText(), slot: window.nesStats.slot };
   });
   assert.equal(st.saved, true);
   assert.equal(st.loaded, true);
@@ -136,7 +136,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#slots li[data-slot="2"]').textContent.includes("20"));
   await page.evaluate(() => window.nesApp.runFrames(60));
   await page.keyboard.press("F8");
-  await page.waitForFunction(() => document.getElementById("toast").textContent.startsWith("Loaded slot 2"));
+  await page.waitForFunction(() => window.nesApp.osdText().startsWith("Loaded slot 2"));
   const keys = await page.evaluate(async () => ({ slot: window.nesStats.slot, slots: (await window.nesStore.listStates(window.nesStats.crc)).map((s) => s.slot) }));
   assert.deepEqual(keys.slots, [1, 2]);
   record("keys: F6 wraps to 9, F7 F7 to 2, F5 saves, F8 loads", `slot ${keys.slot}, used slots ${keys.slots}`);
@@ -175,7 +175,7 @@ try {
   assert.ok(badErr && /letter|length|code/i.test(badErr), `error string: ${badErr}`);
   const dup = await page.evaluate(() => window.nesApp.addCheat("SXIOPO", "infinite lives"));
   assert.equal(dup, null);
-  const c1 = await page.evaluate(async () => ({ text: window.nesApp.emu.cheats_text(), stored: await window.nesStore.getCheats(window.nesStats.crc), toast: document.getElementById("toast").textContent, codeBox: document.getElementById("cheat-code").value }));
+  const c1 = await page.evaluate(async () => ({ text: window.nesApp.emu.cheats_text(), stored: await window.nesStore.getCheats(window.nesStats.crc), toast: window.nesApp.osdText(), codeBox: document.getElementById("cheat-code").value }));
   assert.match(c1.text, /SXIOPO\t1\t/);
   assert.match(c1.text, /075A:02\t1\ttwo coins/);
   assert.equal(c1.stored, c1.text);

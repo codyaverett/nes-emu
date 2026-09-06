@@ -31,7 +31,9 @@ static server can host the directory.
 - **Input.** The SDL key map: Z/X/Right Shift/Enter/arrows for player 1,
   quote/semicolon/comma/period/IJKL for player 2; R reset, P pause, M
   mute, F fullscreen. All buttons release on window blur and when the
-  tab is hidden. The gate accepts a click (file picker) or a dropped
+  tab is hidden. Since issue #52 every key goes to the core's
+  `key_down` first (palette, pages, hotkeys) and the controller table
+  only sees what it did not use (`docs/debugging/SHARED_OVERLAY_UI.md`). The gate accepts a click (file picker) or a dropped
   `.nes`; nothing is uploaded anywhere.
 - **Diagnostics.** `window.nesStats` (frames, display and emulated fps,
   queued samples, underruns, dropped samples, audio state) is updated
