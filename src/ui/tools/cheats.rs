@@ -140,7 +140,7 @@ impl Cheats {
                     // Parse now so a bad code is reported before the
                     // description is typed; the App parses again on add.
                     let code = buffer.replace(';', ":").replace('/', "?");
-                    match nes_emu::cheat::Cheat::parse(&code) {
+                    match crate::cheat::Cheat::parse(&code) {
                         Ok(_) => {
                             app.cheat_error = None;
                             Mode::EnterDescription {
@@ -236,10 +236,7 @@ impl Tool for Cheats {
             "{} cheat(s), {} enabled   file: {}",
             cheats.len(),
             enabled,
-            app.cheat_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
+            app.host.cheats_label()
         );
         font::draw_text(
             painter,

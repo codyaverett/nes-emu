@@ -42,16 +42,12 @@ pub trait Painter {
 /// An in-memory RGBA surface with source-over blending, transparent
 /// until drawn on. The web page uploads [`RgbaPainter::pixels`] to a
 /// canvas layered over the game frame.
-// Unused by the SDL binary; the web frontend constructs it once this
-// module lives in the library (docs/plans/SHARED_OVERLAY_UI.md, Phase 3).
-#[allow(dead_code)]
 pub struct RgbaPainter {
     width: u32,
     height: u32,
     pixels: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl RgbaPainter {
     pub fn new(width: u32, height: u32) -> Self {
         RgbaPainter {
@@ -102,7 +98,6 @@ impl RgbaPainter {
 /// Integer arithmetic with rounding; an opaque source replaces, a fully
 /// transparent one leaves `dst` alone, and any source over a transparent
 /// destination yields the source unchanged (including its alpha).
-#[allow(dead_code)]
 fn blend(dst: &mut [u8], src: Color) {
     let sa = src.a as u32;
     if sa == 255 {

@@ -58,9 +58,6 @@ impl Key {
             .map(|d| d as u8)
     }
 
-    // Unused by the SDL binary; the web page calls it once this module
-    // lives in the library (docs/plans/SHARED_OVERLAY_UI.md, Phase 3).
-    #[allow(dead_code)]
     /// Map a browser `KeyboardEvent.code` (a physical key name such as
     /// `KeyA`, `Digit3`, `ArrowUp`, `F5`) to a [`Key`]. Unknown codes are
     /// [`Key::Other`].

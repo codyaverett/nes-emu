@@ -3,22 +3,24 @@
 //!
 //! `App` owns the `System` and the handles the audio callback reads, plus
 //! the run-control flags (paused, frame advance, overscan crop, quit).
-//! Commands and tools mutate it; the main loop reads the flags once per
-//! frame and applies anything that touches SDL objects (window size, the
-//! source rectangle) itself, because those live outside this struct.
+//! Commands and tools mutate it; the frontend reads the flags once per
+//! frame and applies anything that touches its own objects (window size,
+//! the source rectangle) itself, because those live outside this struct.
+//!
+//! Nothing here reads a clock or a file: the frontend sets [`App::now_ms`]
+//! before handling input and drawing, and slot and cheat storage go
+//! through the [`Host`] it supplied, so the same struct runs in the SDL
+//! binary and on the web page (docs/plans/SHARED_OVERLAY_UI.md).
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use sdl2::rect::Rect;
-
-use nes_emu::cheat::{Cheat, CheatError};
-use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use nes_emu::system::System;
+use crate::cheat::{Cheat, CheatError};
+use crate::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::system::System;
 
 use super::commands::{self, Command};
+use super::host::Host;
 use super::tools::ToolId;
 
 /// Pixels hidden on every edge of the picture when overscan cropping is
@@ -30,8 +32,12 @@ use super::tools::ToolId;
 /// while scrolling.
 pub const OVERSCAN_PIXELS: u32 = 8;
 
-/// How long the volume/mute indicator stays on screen after a change.
-const OSD_DURATION: Duration = Duration::from_secs(2);
+/// How long the volume/mute indicator and a toast stay on screen after
+/// a change, in milliseconds of [`App::now_ms`].
+pub const OSD_DURATION_MS: u64 = 2000;
+
+/// How long the `Rewinding` line outlives the last held frame.
+pub const REWIND_OSD_MS: u64 = 500;
 
 /// Samples queued for the SDL audio callback.
 pub type AudioQueue = Arc<Mutex<VecDeque<f32>>>;
@@ -66,13 +72,16 @@ pub struct App {
     /// Set by the quit command or Escape; the main loop exits, flushing
     /// battery RAM on the way out.
     pub quit_requested: bool,
-    /// While `Some` and in the future, the volume/mute indicator is drawn.
-    pub osd_until: Option<Instant>,
-    /// Battery-backed PRG RAM file next to the ROM.
-    pub save_path: PathBuf,
-    /// Cheat list next to the ROM (`<rom>.cht`), rewritten on every
-    /// change through the `*_cheat*` methods below.
-    pub cheat_path: PathBuf,
+    /// While `Some` and later than `now_ms`, the volume/mute indicator
+    /// is drawn.
+    pub osd_until: Option<u64>,
+    /// The frontend's clock in milliseconds, set before input is handled
+    /// and before drawing; toasts expire against it. Any origin works
+    /// (an `Instant` since start, `Date.now()`), it only has to advance.
+    pub now_ms: u64,
+    /// Slot and cheat storage (`<rom>.sN` and `<rom>.cht` files, or the
+    /// browser store). Every cheat change rewrites the cheat text.
+    pub host: Box<dyn Host>,
     /// Last cheat error, shown in red on the Cheats page until the next
     /// successful change. Set by the page and by `cheat add` / `cheat
     /// toggle` from the palette, whose failures would otherwise only
@@ -85,14 +94,12 @@ pub struct App {
     pub pending_tool: Option<ToolId>,
     /// First address the memory page shows, kept across opens.
     pub memory_addr: u16,
-    /// The ROM file; save states live next to it as `<rom>.s1` .. `.s9`
+    /// Current save-state slot, 1 to [`STATE_SLOTS`]
     /// (docs/debugging/SAVE_STATES.md, issue #39).
-    pub rom_path: PathBuf,
-    /// Current save-state slot, 1 to [`STATE_SLOTS`].
     pub slot: u8,
-    /// One-line message drawn over the game until the instant passes
-    /// ("Saved slot 3"). Independent of the volume indicator.
-    pub osd_text: Option<(String, Instant)>,
+    /// One-line message drawn over the game until `now_ms` passes the
+    /// stamp ("Saved slot 3"). Independent of the volume indicator.
+    pub osd_text: Option<(String, u64)>,
     /// State images, oldest first, taken every `REWIND_INTERVAL_FRAMES`
     /// while `rewind_recording` is on; capped at `REWIND_MAX_ENTRIES`.
     pub rewind_buffer: VecDeque<Vec<u8>>,
@@ -104,7 +111,7 @@ pub struct App {
     pub rewinding: bool,
     /// Emulated frames since the last snapshot.
     rewind_frame_counter: u32,
-    /// Set once the first snapshot has been timed and logged.
+    /// Set once the first snapshot has been logged.
     rewind_cost_logged: bool,
 }
 
@@ -118,7 +125,7 @@ impl App {
         muted: Arc<Mutex<bool>>,
         volume: Arc<Mutex<f32>>,
         crop_enabled: bool,
-        rom_path: PathBuf,
+        host: Box<dyn Host>,
     ) -> Self {
         App {
             system,
@@ -131,13 +138,12 @@ impl App {
             crop_dirty: false,
             quit_requested: false,
             osd_until: None,
-            save_path: rom_path.with_extension("sav"),
-            cheat_path: rom_path.with_extension("cht"),
+            now_ms: 0,
+            host,
             cheat_error: None,
             commands: commands::builtin_commands(),
             pending_tool: None,
             memory_addr: 0,
-            rom_path,
             slot: 1,
             osd_text: None,
             rewind_buffer: VecDeque::with_capacity(REWIND_MAX_ENTRIES),
@@ -154,24 +160,31 @@ impl App {
 
     // Save states (docs/debugging/SAVE_STATES.md, issue #39).
 
-    /// Show `text` over the game for `OSD_DURATION`.
+    /// Show `text` over the game for `OSD_DURATION_MS`.
     pub fn show_message(&mut self, text: impl Into<String>) {
         let text = text.into();
         log::info!("{}", text);
-        self.osd_text = Some((text, Instant::now() + OSD_DURATION));
+        self.osd_text = Some((text, self.now_ms + OSD_DURATION_MS));
     }
 
     /// The message to draw this frame, if one is still current.
     pub fn osd_message(&self) -> Option<&str> {
         match &self.osd_text {
-            Some((text, until)) if Instant::now() < *until => Some(text),
+            Some((text, until)) if self.now_ms < *until => Some(text),
             _ => None,
         }
     }
 
-    /// `<rom>.sN` for slot `n`.
-    pub fn state_path(&self, slot: u8) -> PathBuf {
-        self.rom_path.with_extension(format!("s{slot}"))
+    /// True while the volume/mute indicator should be drawn (audio is on
+    /// and a change happened less than `OSD_DURATION_MS` ago).
+    pub fn osd_bar_visible(&self) -> bool {
+        self.audio_enabled() && self.osd_until.is_some_and(|until| self.now_ms < until)
+    }
+
+    /// True when `draw_messages` would draw anything: the volume bar, a
+    /// toast, or the paused reminder.
+    pub fn messages_visible(&self) -> bool {
+        self.osd_bar_visible() || self.osd_message().is_some() || (self.paused && !self.rewinding)
     }
 
     /// Snapshot the machine into `slot` and make it the current slot.
@@ -181,12 +194,11 @@ impl App {
             return;
         }
         self.slot = slot;
-        let path = self.state_path(slot);
         let image = self.system.save_state();
-        match std::fs::write(&path, &image) {
+        match self.host.write_state(slot, &image) {
             Ok(()) => self.show_message(format!("Saved slot {slot}")),
             Err(e) => {
-                log::warn!("Could not write {}: {}", path.display(), e);
+                log::warn!("Could not save slot {}: {}", slot, e);
                 self.show_message(format!("Save failed: {e}"));
             }
         }
@@ -202,15 +214,14 @@ impl App {
             return;
         }
         self.slot = slot;
-        let path = self.state_path(slot);
-        let image = match std::fs::read(&path) {
-            Ok(image) => image,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let image = match self.host.read_state(slot) {
+            Ok(Some(image)) => image,
+            Ok(None) => {
                 self.show_message(format!("Slot {slot} is empty"));
                 return;
             }
             Err(e) => {
-                log::warn!("Could not read {}: {}", path.display(), e);
+                log::warn!("Could not read slot {}: {}", slot, e);
                 self.show_message(format!("Load failed: {e}"));
                 return;
             }
@@ -223,7 +234,7 @@ impl App {
                 self.show_message(format!("Loaded slot {slot}"));
             }
             Err(e) => {
-                log::warn!("Could not load {}: {}", path.display(), e);
+                log::warn!("Could not load slot {}: {}", slot, e);
                 self.show_message(format!("Load failed: {e}"));
             }
         }
@@ -262,7 +273,7 @@ impl App {
             return;
         }
         self.slot = slot;
-        let status = if self.state_path(slot).exists() {
+        let status = if self.host.slot_info(slot).is_some() {
             "saved"
         } else {
             "empty"
@@ -314,7 +325,7 @@ impl App {
     /// Call once per emulated frame (not for the frame `rewind_step` runs
     /// to refresh the picture): every `REWIND_INTERVAL_FRAMES` a snapshot
     /// is pushed and the oldest dropped past `REWIND_MAX_ENTRIES`. The
-    /// first snapshot's cost is logged at info level.
+    /// first snapshot's size is logged at info level.
     pub fn record_rewind_frame(&mut self) {
         if !self.rewind_recording {
             return;
@@ -324,14 +335,12 @@ impl App {
             return;
         }
         self.rewind_frame_counter = 0;
-        let started = Instant::now();
         let image = self.system.save_state();
         if !self.rewind_cost_logged {
             self.rewind_cost_logged = true;
             log::info!(
-                "Rewind snapshot: {} bytes in {:?} (every {} frames, {} kept, {:.1} MB max)",
+                "Rewind snapshot: {} bytes (every {} frames, {} kept, {:.1} MB max)",
                 image.len(),
-                started.elapsed(),
                 REWIND_INTERVAL_FRAMES,
                 REWIND_MAX_ENTRIES,
                 (image.len() * REWIND_MAX_ENTRIES) as f32 / 1e6
@@ -389,6 +398,22 @@ impl App {
         }
         self.system.run_frame();
         true
+    }
+
+    /// One presented frame while Backspace is held, for the frontend's
+    /// loop: drop the queued audio so the device holds its last sample
+    /// (silence) instead of playing frames the game is leaving, load the
+    /// next snapshot, and keep the `Rewinding` line on screen. Nothing is
+    /// emulated and nothing recorded until the key is released.
+    pub fn rewind_frame(&mut self) {
+        if let Some(buffer) = &self.audio_buffer {
+            buffer.lock().unwrap().clear();
+        }
+        self.rewind_step();
+        self.osd_text = Some((
+            format!("Rewinding  {:.1} s", self.rewind_seconds()),
+            self.now_ms + REWIND_OSD_MS,
+        ));
     }
 
     /// Jump back `seconds` at once: pops the snapshots covering that
@@ -478,13 +503,6 @@ impl App {
         )
     }
 
-    /// The part of the frame texture that is copied to the window.
-    pub fn src_rect(&self) -> Rect {
-        let crop = self.crop();
-        let (w, h) = self.visible_size();
-        Rect::new(crop as i32, crop as i32, w, h)
-    }
-
     pub fn is_muted(&self) -> bool {
         *self.muted.lock().unwrap()
     }
@@ -494,7 +512,7 @@ impl App {
     }
 
     fn show_osd(&mut self) {
-        self.osd_until = Some(Instant::now() + OSD_DURATION);
+        self.osd_until = Some(self.now_ms + OSD_DURATION_MS);
     }
 
     pub fn pause(&mut self) {
@@ -578,12 +596,20 @@ impl App {
     // Cheats (docs/debugging/CHEAT_ENGINE.md, issue #32). Every mutation
     // goes through one of these so the .cht file is rewritten on change.
 
-    /// Rewrite `cheat_path` from the current set; failures are logged.
+    /// Persist the current set through the host; failures are logged.
     fn save_cheats(&mut self) {
-        if let Err(e) = self.system.save_cheats(&self.cheat_path) {
-            let message = format!("Could not write {}: {}", self.cheat_path.display(), e);
-            log::warn!("{}", message);
-            self.cheat_error = Some(message);
+        let text = self.system.cheats().to_string();
+        match self.host.write_cheats(&text) {
+            Ok(()) => log::info!(
+                "Wrote {} cheat(s) to {}",
+                self.system.cheats().len(),
+                self.host.cheats_label()
+            ),
+            Err(e) => {
+                let message = format!("Could not write cheats: {}", e);
+                log::warn!("{}", message);
+                self.cheat_error = Some(message);
+            }
         }
     }
 
@@ -705,7 +731,7 @@ impl App {
 
     pub fn mute_channel(&mut self, ch: usize) {
         self.system.apu.set_channel_muted(ch, true);
-        self.show_message(format!("{} muted", nes_emu::apu::CHANNEL_NAMES[ch]));
+        self.show_message(format!("{} muted", crate::apu::CHANNEL_NAMES[ch]));
     }
 
     pub fn toggle_channel_mute(&mut self, ch: usize) {
@@ -713,13 +739,13 @@ impl App {
         self.system.apu.set_channel_muted(ch, !muted);
         self.show_message(format!(
             "{} {}",
-            nes_emu::apu::CHANNEL_NAMES[ch],
+            crate::apu::CHANNEL_NAMES[ch],
             if muted { "unmuted" } else { "muted" }
         ));
     }
 
     pub fn unmute_all(&mut self) {
-        for ch in 0..nes_emu::apu::CHANNEL_COUNT {
+        for ch in 0..crate::apu::CHANNEL_COUNT {
             self.system.apu.set_channel_muted(ch, false);
         }
         self.show_message("All channels unmuted");
@@ -739,7 +765,128 @@ pub fn parse_hex_address(text: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_hex_address;
+    use super::*;
+    use crate::ui::host::SlotInfo;
+
+    /// A host with nine in-memory slots and a cheat text, for tests.
+    pub struct MemoryHost {
+        pub slots: Vec<Option<Vec<u8>>>,
+        pub cheats: String,
+    }
+
+    impl MemoryHost {
+        pub fn new() -> Self {
+            MemoryHost {
+                slots: vec![None; STATE_SLOTS as usize],
+                cheats: String::new(),
+            }
+        }
+    }
+
+    impl Host for MemoryHost {
+        fn write_state(&mut self, slot: u8, image: &[u8]) -> Result<(), String> {
+            self.slots[slot as usize - 1] = Some(image.to_vec());
+            Ok(())
+        }
+        fn read_state(&mut self, slot: u8) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.slots[slot as usize - 1].clone())
+        }
+        fn slot_info(&self, slot: u8) -> Option<SlotInfo> {
+            self.slots[slot as usize - 1].as_ref().map(|s| SlotInfo {
+                modified_unix_secs: Some(0),
+                size: s.len() as u64,
+            })
+        }
+        fn slot_label(&self, slot: u8) -> String {
+            format!("slot {slot}")
+        }
+        fn write_cheats(&mut self, text: &str) -> Result<(), String> {
+            self.cheats = text.to_string();
+            Ok(())
+        }
+        fn cheats_label(&self) -> String {
+            "memory".to_string()
+        }
+    }
+
+    /// Mapper 0, 32 KB of NOPs with a reset vector, so states load.
+    fn app() -> App {
+        let mut rom = b"NES\x1A".to_vec();
+        rom.extend_from_slice(&[2, 0, 0, 0]);
+        rom.extend_from_slice(&[0; 8]);
+        let mut prg = vec![0xEAu8; 0x8000];
+        prg[0x7FFC] = 0x00;
+        prg[0x7FFD] = 0x80;
+        rom.extend_from_slice(&prg);
+        let mut system = System::new();
+        system.load_cartridge(crate::cartridge::Cartridge::load_from_bytes(&rom).unwrap());
+        App::new(
+            system,
+            None,
+            Arc::new(Mutex::new(false)),
+            Arc::new(Mutex::new(0.5)),
+            true,
+            Box::new(MemoryHost::new()),
+        )
+    }
+
+    #[test]
+    fn toasts_expire_against_now_ms() {
+        let mut a = app();
+        a.now_ms = 1000;
+        a.show_message("hello");
+        assert_eq!(a.osd_message(), Some("hello"));
+        assert!(a.messages_visible());
+        a.now_ms = 1000 + OSD_DURATION_MS - 1;
+        assert_eq!(a.osd_message(), Some("hello"));
+        a.now_ms = 1000 + OSD_DURATION_MS;
+        assert_eq!(a.osd_message(), None);
+        assert!(!a.messages_visible());
+        // The paused reminder counts as a message; the volume bar needs audio.
+        a.pause();
+        a.now_ms += OSD_DURATION_MS;
+        assert!(a.messages_visible());
+        a.toggle_mute();
+        assert!(!a.osd_bar_visible());
+    }
+
+    #[test]
+    fn slots_go_through_the_host() {
+        let mut a = app();
+        a.load_state();
+        assert_eq!(a.osd_message(), Some("Slot 1 is empty"));
+        a.save_state_to(3);
+        assert_eq!(a.slot, 3);
+        assert_eq!(a.osd_message(), Some("Saved slot 3"));
+        assert!(a.host.slot_info(3).is_some());
+        a.set_slot(2);
+        assert_eq!(a.osd_message(), Some("Slot 2 (empty)"));
+        a.set_slot(3);
+        assert_eq!(a.osd_message(), Some("Slot 3 (saved)"));
+        a.load_state_from(3);
+        assert_eq!(a.osd_message(), Some("Loaded slot 3"));
+    }
+
+    #[test]
+    fn cheat_changes_rewrite_the_host_text() {
+        let mut a = app();
+        a.add_cheat("SXIOPO", "lives").unwrap();
+        assert_eq!(a.host.cheats_label(), "memory");
+        a.cheat_toggle_command("1");
+        assert_eq!(a.osd_message(), Some("Cheat SXIOPO disabled"));
+        assert!(a.add_cheat("zzz", "").is_err());
+        assert!(a.cheat_error.is_some());
+    }
+
+    #[test]
+    fn rewind_frame_keeps_the_osd_line_current() {
+        let mut a = app();
+        a.now_ms = 5000;
+        a.rewind_frame();
+        assert_eq!(a.osd_message(), Some("Rewinding  0.0 s"));
+        a.now_ms = 5000 + REWIND_OSD_MS;
+        assert_eq!(a.osd_message(), None);
+    }
 
     #[test]
     fn hex_addresses_accept_common_prefixes() {

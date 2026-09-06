@@ -1,17 +1,17 @@
 //! States page: the nine save-state slots with their file times.
 //!
-//! One row per slot showing whether `<rom>.sN` exists, when it was last
-//! written (UTC) and its size. Up/Down move the highlight, Return loads
-//! the highlighted slot, S saves to it; both make it the current slot
-//! (the one F5/F8 use). The list is re-read from disk on every draw, so a
-//! save made from the page shows up at once. Escape or Q close.
-
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use crate::ui::key::Key;
+//! One row per slot showing whether the slot is used, when it was last
+//! written (UTC) and its size, as reported by the `Host` (`<rom>.sN`
+//! files in the SDL binary, the browser store on the web). Up/Down move
+//! the highlight, Return loads the highlighted slot, S saves to it; both
+//! make it the current slot (the one F5/F8 use). The list is re-read on
+//! every draw, so a save made from the page shows up at once. Escape or
+//! Q close.
 
 use crate::ui::app::{App, STATE_SLOTS};
 use crate::ui::font;
+use crate::ui::host::SlotInfo;
+use crate::ui::key::Key;
 use crate::ui::painter::Painter;
 use crate::ui::tool::{self, Tool, ToolEvent};
 
@@ -19,20 +19,6 @@ use crate::ui::tool::{self, Tool, ToolEvent};
 pub struct States {
     /// Highlighted slot, 1-based; `None` means the current slot.
     cursor: Option<u8>,
-}
-
-/// What the page knows about one slot file.
-pub struct SlotInfo {
-    modified: Option<SystemTime>,
-    size: u64,
-}
-
-fn slot_info(app: &App, slot: u8) -> Option<SlotInfo> {
-    let meta = std::fs::metadata(app.state_path(slot)).ok()?;
-    Some(SlotInfo {
-        modified: meta.modified().ok(),
-        size: meta.len(),
-    })
 }
 
 /// `YYYY-MM-DD HH:MM:SS` in UTC from seconds since the Unix epoch
@@ -60,9 +46,8 @@ pub fn format_row(slot: u8, info: Option<&SlotInfo>, current: bool) -> String {
     match info {
         Some(info) => {
             let when = info
-                .modified
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| format_utc(d.as_secs()))
+                .modified_unix_secs
+                .map(format_utc)
                 .unwrap_or_else(|| "unknown time".to_string());
             format!("{mark} {slot}  {when} UTC  {:>6} B", info.size)
         }
@@ -106,11 +91,7 @@ impl Tool for States {
         let mut y = tool::body_top(font_scale);
         let step = tool::line_step(font_scale);
         let cursor = self.cursor(app);
-        let file = app
-            .state_path(app.slot)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let file = app.host.slot_label(app.slot);
         font::draw_text(
             painter,
             x,
@@ -130,7 +111,7 @@ impl Tool for States {
         )?;
         y += step;
         for slot in 1..=STATE_SLOTS {
-            let info = slot_info(app, slot);
+            let info = app.host.slot_info(slot);
             let row = format_row(slot, info.as_ref(), slot == app.slot);
             let colour = if slot == cursor {
                 tool::ACCENT
@@ -179,7 +160,7 @@ mod tests {
     #[test]
     fn rows_fit_the_window() {
         let info = SlotInfo {
-            modified: Some(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
+            modified_unix_secs: Some(1_700_000_000),
             size: 15098,
         };
         let row = format_row(3, Some(&info), true);

@@ -1,5 +1,3 @@
-mod ui;
-
 use anyhow::{bail, Context, Result};
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::Event;
@@ -19,14 +17,14 @@ use nes_emu::cartridge::Cartridge;
 use nes_emu::input::ControllerButton;
 use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use nes_emu::system::System;
-
+use nes_emu::ui;
 use ui::app::{App, AudioQueue};
+use ui::host::FileHost;
 use ui::key::Key;
 use ui::painter::Painter;
-use ui::tools::ToolId;
 use ui::Ui;
 
-const SCALE: u32 = 3;
+const SCALE: u32 = ui::WINDOW_SCALE;
 
 /// The window as a `Painter`: every overlay rectangle becomes one
 /// `set_draw_color` plus `fill_rect` on the canvas, exactly the calls the
@@ -147,6 +145,13 @@ fn controller_for(app: &mut App, player: Player) -> &mut nes_emu::input::Control
         Player::One => &mut app.system.controller1,
         Player::Two => &mut app.system.controller2,
     }
+}
+
+/// The part of the frame texture that is copied to the window.
+fn source_rect(app: &App) -> Rect {
+    let crop = app.crop() as i32;
+    let (w, h) = app.visible_size();
+    Rect::new(crop, crop, w, h)
 }
 
 /// Command-line options.
@@ -321,65 +326,26 @@ fn sdl_key(key: Keycode) -> Key {
     }
 }
 
-/// Key press routing: the UI first, then hotkeys, then the controller.
-/// While the palette or a page is open the UI consumes every press, so
-/// nothing reaches the hotkeys or the controller.
+/// Key press routing: the shared UI (palette, pages, hotkeys) first,
+/// then Escape (quit) and the controller. While the palette or a page is
+/// open the UI consumes every press, so nothing reaches the controller.
 fn key_down(keycode: Keycode, app: &mut App, ui: &mut Ui) {
     let key = sdl_key(keycode);
-    if ui.handle_key(key, app) {
+    if ui.key_down(key, app) {
         return;
     }
-    match key {
-        Key::Escape => app.quit(),
-        Key::F1 => ui.open_tool(ToolId::Help),
-        Key::Char('r') => app.reset(),
-        Key::Char('p') => app.toggle_pause(),
-        Key::Char('n') => app.request_frame_advance(),
-        Key::Char('m') => app.toggle_mute(),
-        Key::Char('=') | Key::Char('+') => app.volume_up(),
-        Key::Char('-') => app.volume_down(),
-        // Save states (docs/debugging/SAVE_STATES.md).
-        Key::F5 => app.save_state(),
-        Key::F6 => app.prev_slot(),
-        Key::F7 => app.next_slot(),
-        Key::F8 => app.load_state(),
-        // Rewind while held (docs/debugging/UI_FRAMEWORK.md, issue #44);
-        // the release below ends it.
-        Key::Backspace => app.rewind_start(),
-        _ => {}
+    if key == Key::Escape {
+        app.quit();
     }
     if let Some((player, button)) = map_keycode_to_button(keycode) {
         controller_for(app, player).press(button);
     }
 }
 
-/// One line of text over the bottom of the picture ("Saved slot 3").
-fn draw_message(painter: &mut dyn Painter, font_scale: u32, text: &str) -> Result<()> {
-    use ui::painter::Color;
-    let (w, h) = painter.size();
-    let pad = 4 * font_scale as i32;
-    let line = ui::font::line_height(font_scale) as i32;
-    let y = h as i32 - line - 3 * pad;
-    painter
-        .fill_rect(
-            0,
-            y - pad,
-            w,
-            (line + 2 * pad) as u32,
-            Color::rgba(0, 0, 0, 180),
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to draw message background: {}", e))?;
-    ui::font::draw_text(painter, pad, y, font_scale, Color::rgb(255, 255, 255), text)
-        .map_err(|e| anyhow::anyhow!("Failed to draw message: {}", e))
-}
-
 /// Releases reach the controller in every UI mode so a button held when
 /// the palette opened does not stick.
-fn key_up(key: Keycode, app: &mut App) {
-    if sdl_key(key) == Key::Backspace {
-        // A no-op when the press went to the palette or a page.
-        app.rewind_stop();
-    }
+fn key_up(key: Keycode, app: &mut App, ui: &mut Ui) {
+    ui.key_up(sdl_key(key), app);
     if let Some((player, button)) = map_keycode_to_button(key) {
         controller_for(app, player).release(button);
     }
@@ -399,51 +365,6 @@ fn write_screenshot(canvas: &WindowCanvas, path: &Path) -> Result<()> {
     write!(file, "P6\n{} {}\n255\n", w, h)?;
     file.write_all(&pixels[..(w * h * 3) as usize])?;
     log::info!("Wrote screenshot {} ({}x{})", path.display(), w, h);
-    Ok(())
-}
-
-fn draw_osd(painter: &mut dyn Painter, app: &App) -> Result<()> {
-    use ui::painter::Color;
-    let osd_x = 10 * SCALE as i32;
-    let osd_y = 10 * SCALE as i32;
-    let osd_width = 200 * SCALE;
-    let osd_height = 20 * SCALE;
-
-    // Background (semi-transparent black)
-    painter
-        .fill_rect(
-            osd_x,
-            osd_y,
-            osd_width,
-            osd_height,
-            Color::rgba(0, 0, 0, 180),
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to draw OSD background: {}", e))?;
-
-    if app.is_muted() {
-        // Muted indicator (red)
-        painter
-            .fill_rect(
-                osd_x + 2 * SCALE as i32,
-                osd_y + 2 * SCALE as i32,
-                osd_width - 4 * SCALE,
-                osd_height - 4 * SCALE,
-                Color::rgb(255, 0, 0),
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to draw mute indicator: {}", e))?;
-    } else {
-        // Volume bar (green)
-        let filled_width = ((osd_width - 4 * SCALE) as f32 * app.volume()) as u32;
-        painter
-            .fill_rect(
-                osd_x + 2 * SCALE as i32,
-                osd_y + 2 * SCALE as i32,
-                filled_width,
-                osd_height - 4 * SCALE,
-                Color::rgb(0, 255, 0),
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to draw volume bar: {}", e))?;
-    }
     Ok(())
 }
 
@@ -568,12 +489,12 @@ fn main() -> Result<()> {
         muted,
         volume,
         !options.full_frame,
-        PathBuf::from(rom_path),
+        Box::new(FileHost::new(PathBuf::from(rom_path))),
     );
     let mut ui = Ui::new(ui::DEFAULT_FONT_SCALE);
 
     let (visible_width, visible_height) = app.visible_size();
-    let mut src_rect = app.src_rect();
+    let mut src_rect = source_rect(&app);
 
     let window = video_subsystem
         .window(
@@ -607,6 +528,7 @@ fn main() -> Result<()> {
         .event_pump()
         .map_err(|e| anyhow::anyhow!("Event pump failed: {}", e))?;
 
+    let started = Instant::now();
     let mut last_battery_flush = Instant::now();
     let frame_duration = Duration::from_nanos(16_666_667);
     let mut presented: u64 = 0;
@@ -617,6 +539,8 @@ fn main() -> Result<()> {
 
     'running: loop {
         let frame_start = Instant::now();
+        // The UI's clock: toasts are stamped and expire against it.
+        app.now_ms = started.elapsed().as_millis() as u64;
 
         for event in event_pump.poll_iter() {
             match event {
@@ -628,7 +552,7 @@ fn main() -> Result<()> {
                 Event::KeyUp {
                     keycode: Some(keycode),
                     ..
-                } => key_up(keycode, &mut app),
+                } => key_up(keycode, &mut app, &mut ui),
                 _ => {}
             }
         }
@@ -642,7 +566,7 @@ fn main() -> Result<()> {
                     key_down(entry.key, &mut app, &mut ui);
                 }
                 if entry.up {
-                    key_up(entry.key, &mut app);
+                    key_up(entry.key, &mut app, &mut ui);
                 }
             }
         }
@@ -653,7 +577,7 @@ fn main() -> Result<()> {
 
         if app.crop_dirty {
             app.crop_dirty = false;
-            src_rect = app.src_rect();
+            src_rect = source_rect(&app);
             let (w, h) = app.visible_size();
             if let Err(e) = canvas.window_mut().set_size(w * SCALE, h * SCALE) {
                 log::warn!("Could not resize window: {}", e);
@@ -672,14 +596,7 @@ fn main() -> Result<()> {
         // and the audio queue is dropped so the device holds its last
         // sample (silence) until emulation refills it on release.
         if app.rewinding {
-            if let Some(buffer) = &app.audio_buffer {
-                buffer.lock().unwrap().clear();
-            }
-            app.rewind_step();
-            app.osd_text = Some((
-                format!("Rewinding  {:.1} s", app.rewind_seconds()),
-                Instant::now() + Duration::from_millis(500),
-            ));
+            app.rewind_frame();
         } else if app.paused {
             if app.frame_advance {
                 app.frame_advance = false;
@@ -714,36 +631,13 @@ fn main() -> Result<()> {
             .copy(&texture, Some(src_rect), None)
             .map_err(|e| anyhow::anyhow!("Canvas copy failed: {}", e))?;
 
+        // Overlays: the volume bar, toasts and the paused reminder, then
+        // the palette or page, all through the shared UI.
         {
             let mut painter =
                 SdlPainter::new(&mut canvas).map_err(|e| anyhow::anyhow!("output size: {}", e))?;
-
-            // Volume / mute indicator, only while audio is on.
-            if let Some(until) = app.osd_until {
-                if Instant::now() < until {
-                    if app.audio_enabled() {
-                        draw_osd(&mut painter, &app)?;
-                    }
-                } else {
-                    app.osd_until = None;
-                }
-            }
-
-            // Toasts for every operation, in every mode; while paused with
-            // no toast showing, a persistent reminder of how to resume.
-            if let Some(text) = app.osd_message().map(str::to_owned) {
-                draw_message(&mut painter, ui.font_scale, &text)?;
-            } else {
-                app.osd_text = None;
-                if app.paused && !app.rewinding {
-                    draw_message(
-                        &mut painter,
-                        ui.font_scale,
-                        "PAUSED   P resume   N step   Bksp rewind",
-                    )?;
-                }
-            }
-
+            ui::draw_messages(&mut painter, ui.font_scale, &app)
+                .map_err(|e| anyhow::anyhow!("Failed to draw messages: {}", e))?;
             ui.draw(&mut painter, &app)
                 .map_err(|e| anyhow::anyhow!("UI draw failed: {}", e))?;
         }
@@ -766,8 +660,8 @@ fn main() -> Result<()> {
 
         if last_battery_flush.elapsed() >= BATTERY_FLUSH_INTERVAL {
             last_battery_flush = Instant::now();
-            if let Err(e) = app.system.save_battery(&app.save_path) {
-                log::warn!("Could not write {}: {}", app.save_path.display(), e);
+            if let Err(e) = app.system.save_battery(&save_path) {
+                log::warn!("Could not write {}: {}", save_path.display(), e);
             }
         }
 
@@ -784,8 +678,8 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Err(e) = app.system.save_battery(&app.save_path) {
-        log::warn!("Could not write {}: {}", app.save_path.display(), e);
+    if let Err(e) = app.system.save_battery(&save_path) {
+        log::warn!("Could not write {}: {}", save_path.display(), e);
     }
 
     log::info!("Emulation stopped.");

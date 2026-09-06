@@ -15,9 +15,9 @@
 
 use crate::ui::key::Key;
 
-use nes_emu::cartridge::Mirroring;
-use nes_emu::ppu::{PpuCtrl, NES_PALETTE};
-use nes_emu::system::System;
+use crate::cartridge::Mirroring;
+use crate::ppu::{PpuCtrl, NES_PALETTE};
+use crate::system::System;
 
 use crate::ui::app::App;
 use crate::ui::font;
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn pattern_and_palette_lookups_use_the_system() {
         let mut system = System::new();
-        let cart = nes_emu::cartridge::Cartridge::load_from_bytes(&nrom_with_chr_ram())
+        let cart = crate::cartridge::Cartridge::load_from_bytes(&nrom_with_chr_ram())
             .expect("synthetic ROM must parse");
         system.load_cartridge(cart);
         // Tile 1 of table 0, row 0: low plane $80, high plane $01.

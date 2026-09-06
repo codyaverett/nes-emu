@@ -7,7 +7,7 @@
 
 use crate::ui::key::Key;
 
-use nes_emu::apu::{CHANNEL_COUNT, CHANNEL_NAMES};
+use crate::apu::{CHANNEL_COUNT, CHANNEL_NAMES};
 
 use crate::ui::app::App;
 use crate::ui::font;
