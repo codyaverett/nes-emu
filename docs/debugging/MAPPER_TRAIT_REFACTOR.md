@@ -53,6 +53,10 @@ pub trait Mapper: Send {
     fn irq_pending(&self) -> bool { false }
     fn clear_irq(&mut self) {}
     fn clock_scanline(&mut self) {}
+    fn ppu_a12_rise(&mut self) {}          // MMC3 (issue 3)
+    fn ppu_fetch(&mut self, addr: u16) {}  // MMC2/MMC4 latches (issue 43)
+    fn cpu_clock(&mut self) {}             // FME-7 IRQ counter (issue 43)
+    // plus cpu_peek/ppu_peek, prg_ram/prg_ram_mut, save_state/load_state
 }
 ```
 
@@ -117,6 +121,12 @@ using the mirroring the mapper reports at that moment.
 | `mapper5.rs` | MMC5 | Wired for the first time. PRG/CHR modes, multiplier, ExRAM, register file. ExRAM nametables, fill mode and the vertical split are recorded but not rendered (the PPU has no per-table nametable hook); `mirroring()` approximates `$5105`. |
 | `mapper65.rs` | Irem H3001 | Moved out of `mod.rs`. CHR registers corrected from `$9000-$9007` to `$B000-$B007` (nesdev); the old offset never mattered because CHR never reached the PPU. |
 | `mapper227.rs` | Address-latch multicart (1200-in-1) | Added for issue 25, see below. |
+| `mapper7.rs` | AxROM | 32 KB PRG bank, single-screen mirroring from the register, CHR RAM. Issue 43. |
+| `mapper9.rs` | MMC2 (PNROM) | 8 KB PRG bank with the last three fixed, four 4 KB CHR registers picked by the two tile-$FD/$FE latches, which the PPU flips through `ppu_fetch`. Holds the `Mmc2Core` shared with MMC4. Issue 43. |
+| `mapper10.rs` | MMC4 (FxROM) | `Mmc2Core` with 16 KB PRG banking and the whole-row latch 0. Issue 43. |
+| `mapper11.rs` | Color Dreams | 32 KB PRG from bits 0-1, 8 KB CHR from bits 4-7. Issue 43. |
+| `mapper66.rs` | GxROM | 32 KB PRG from bits 4-5, 8 KB CHR from bits 0-1. Issue 43. |
+| `mapper69.rs` | Sunsoft FME-7 | Command/parameter registers, 1 KB CHR banks, 8 KB PRG banks with the `$6000` RAM/ROM slot, four mirroring modes, 16-bit IRQ counter clocked per CPU cycle through `cpu_clock`. Issue 43. |
 
 ### Mapper 227 (issue 25)
 
@@ -165,6 +175,119 @@ does nothing on this menu; it is not a navigation key there. The
 compatibility sweep's fixed script (Start at 150) therefore lands in
 Bomberman stage 1.
 
+### Mappers 7, 9, 10, 11, 66, 69 (issue 43)
+
+Six more boards for library coverage. None of the ROMs in `roms/` needed
+them except `SuperMarioBros.nes`, which turned out to be the GxROM (mapper
+66, 64 KB PRG, 16 KB CHR) Super Mario Bros / Duck Hunt cart and had been
+running on the NROM fallback; see the verification notes below. All six
+follow the `mapper2.rs`/`mapper4.rs` shape: `cpu_read` delegates to
+`cpu_peek`, `ppu_peek` mirrors `ppu_read` without side effects, PRG RAM is
+an 8 KB array exposed through `prg_ram`/`prg_ram_mut` even on boards that
+have none (UxROM already does this), and `save_state` writes the registers
+first, then PRG RAM, then `Chr::save_state`.
+
+Two hooks were added to the trait so that the mappers, not the PPU or
+`System`, own the timing-sensitive state:
+
+- `ppu_fetch(addr)`: `Ppu::read_vram` calls it right after `mapper.ppu_read`
+  for every pattern-table access, so background fetches, sprite fetches and
+  `$2007` reads all report. Ordering is the point: the byte at the trigger
+  address comes from the bank selected before the flip, the next fetch from
+  the new one. `ppu_peek` never calls it. Existing mappers use the default
+  no-op, so the fingerprints of every other ROM are unchanged.
+- `cpu_clock()`: `System::tick` calls it once per CPU cycle, after the APU
+  step and before `sample_irq_input`, so a counter wrap in this cycle is
+  visible to the IRQ sample of the same cycle. `tick` is the only place
+  `total_cycles` advances (DMA stalls go through it too), so the FME-7 count
+  is exact.
+
+#### Mapper 7 (AxROM)
+
+One register anywhere in `$8000-$FFFF`: bits 0-2 pick the 32 KB PRG bank,
+bit 4 picks the single nametable page (0 = `SingleScreenLower`, 1 =
+`SingleScreenUpper`). CHR is 8 KB RAM, unbanked. The header mirroring is
+ignored because the register owns it; power-on is bank 0, lower page.
+
+#### Mappers 9 (MMC2) and 10 (MMC4)
+
+`mapper9.rs` holds `Mmc2Core` with a `Kind` switch; `Mapper9` and
+`Mapper10` are newtypes that forward every trait method through the
+`forward_mmc2_core!` macro. Registers (nesdev "MMC2", "MMC4"):
+
+```text
+$A000-$AFFF  PRG bank (bits 0-3)
+             MMC2: 8 KB at $8000-$9FFF, $A000-$FFFF = last three 8 KB banks
+             MMC4: 16 KB at $8000-$BFFF, $C000-$FFFF = last 16 KB bank
+$B000/$C000  4 KB CHR bank for $0000-$0FFF while latch 0 = $FD / $FE
+$D000/$E000  4 KB CHR bank for $1000-$1FFF while latch 1 = $FD / $FE
+$F000-$FFFF  mirroring bit 0: 0 vertical, 1 horizontal
+```
+
+The latches flip on PPU reads (reported through `ppu_fetch`) of the high
+plane of tiles `$FD` and `$FE`:
+
+| Trigger | MMC2 | MMC4 |
+|---------|------|------|
+| latch 0 = `$FD` | `$0FD8` only | `$0FD8-$0FDF` |
+| latch 0 = `$FE` | `$0FE8` only | `$0FE8-$0FEF` |
+| latch 1 = `$FD` | `$1FD8-$1FDF` | `$1FD8-$1FDF` |
+| latch 1 = `$FE` | `$1FE8-$1FEF` | `$1FE8-$1FEF` |
+
+The decode is an explicit match on the full address, not a mask: an early
+version masked off bit 13 and a unit test caught `$2FE8` aliasing onto
+`$0FE8`. Power-on latches are `$FE` (unspecified on hardware; the common
+emulator choice). Both boards get 8 KB PRG RAM at `$6000` (MMC4 boards
+have it, battery backed on Fire Emblem; MMC2 boards do not, but the array
+is harmless).
+
+#### Mapper 11 (Color Dreams)
+
+One register: bits 0-1 the 32 KB PRG bank, bits 4-7 the 8 KB CHR bank, bits
+2-3 are the lockout-defeat lines and ignored. Mirroring from the header.
+
+#### Mapper 66 (GxROM)
+
+One register: bits 4-5 the 32 KB PRG bank, bits 0-1 the 8 KB CHR bank.
+Mirroring from the header. Bus conflicts are not modelled on either 11 or
+66.
+
+#### Mapper 69 (Sunsoft FME-7)
+
+`$8000-$9FFF` selects a command (bits 0-3), `$A000-$BFFF` writes its
+parameter; `$C000-$FFFF` is the 5B audio chip and ignored.
+
+```text
+$0-$7  1 KB CHR bank for $0000 + n * $400
+$8     $6000-$7FFF slot: ERbB BBBB. R = 1 selects PRG RAM, readable and
+       writable only while E = 1 (otherwise open bus, returned as 0);
+       R = 0 maps 8 KB PRG ROM bank bBBBBB there
+$9-$B  8 KB PRG ROM bank (bits 0-5) at $8000, $A000, $C000;
+       $E000-$FFFF fixed to the last bank
+$C     mirroring bits 0-1: 0 horizontal, 1 vertical, 2 single lower,
+       3 single upper (note 0 is horizontal, the opposite of MMC1/MMC3)
+$D     IRQ control: bit 0 IRQ output enable, bit 7 counter enable;
+       every write acknowledges the IRQ
+$E/$F  IRQ counter low / high byte
+```
+
+The 16-bit counter decrements once per `cpu_clock` while bit 7 is set and
+raises the IRQ on the `$0000` to `$FFFF` wrap when bit 0 is set. It keeps
+counting after the wrap and the line stays asserted until a command `$D`
+write (or `clear_irq`).
+
+#### Tests
+
+Each file has unit tests on `tagged_rom` images: power-on layout, every
+bank field including the bits that must not leak into it, wrap to the image
+size, mirroring, the `$6000` slot modes and open bus (69), the IRQ counter
+(exact cycle count, high byte, counter-enable and IRQ-enable independently,
+acknowledge), and a save-state round trip that switches banks, saves,
+switches again, loads and checks the reads match. The MMC2/MMC4 tests drive
+`ppu_fetch` directly for every trigger row and a set of non-triggers, and
+`src/ppu/mod.rs` has `pattern_reads_report_the_fetch_to_the_mapper_after_the_byte`,
+which proves the wiring through `$2007` and `fetch_pattern_high`.
+
 ### Behaviour changes beyond CHR routing
 
 - Out-of-range PRG bank reads wrap to the ROM size instead of returning 0.
@@ -192,6 +315,16 @@ Bomberman stage 1.
 - Frame dumps: a scratch harness ran each ROM for several hundred frames
   against a build of `main` and this branch and diffed the RGB buffers (table
   above).
+- Issue 43: `cargo test --release --test game_frames -- --ignored --nocapture`
+  before and after. Ten of the eleven ROMs are hash-identical at every
+  checkpoint, which is the expected result of a no-op default hook. The one
+  change is `SuperMarioBros.nes`: its header says mapper 66, so it moved
+  from the NROM fallback (last 32 KB of a 64 KB image) to `Mapper66` and now
+  boots to the real title screen. Frame dumps at 240 (appendix harness,
+  built once against a `git archive main` extraction and once against the
+  branch): main showed the title logo half drawn with garbage tiles from
+  the wrong CHR bank where the text and ground should be; the branch shows
+  the standard SMB title, 1985 Nintendo line, player menu and ground tiles.
 
 ### Human visual pass still needed
 
@@ -206,7 +339,14 @@ black lower region until #3 lands, Zelda unchanged from before.
 2. Implement `Mapper`. Use `prg_read(&self.prg_rom, offset)` and
    `self.chr.read(offset)` so bank offsets wrap safely. Return the live
    mirroring from `mirroring()`; override `irq_pending`, `clear_irq` and
-   `clock_scanline` only if the board has an IRQ.
+   one of `clock_scanline` (MMC5), `ppu_a12_rise` (MMC3) or `cpu_clock`
+   (FME-7) only if the board has an IRQ. Override `ppu_fetch` only if the
+   board watches the PPU address bus (MMC2/MMC4 latches); never flip state
+   from `ppu_read` or `ppu_peek`.
+   Implement `cpu_peek`, `ppu_peek`, `prg_ram`/`prg_ram_mut` and
+   `save_state`/`load_state` (order documented in a comment above
+   `save_state`, ending with PRG RAM then `Chr::save_state`); add the row
+   to the `MAPR` table in docs/debugging/SAVE_STATES.md.
 3. Add `pub mod mapperN;` and a match arm in `Cartridge::build_mapper`.
 4. Add unit tests with `mapper::test_util::tagged_rom` so bank arithmetic is
    checked without a ROM image.

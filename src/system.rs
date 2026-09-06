@@ -300,6 +300,10 @@ impl System {
         self.ppu_step();
         self.ppu_step();
         self.apu.step();
+        // Mapper CPU-cycle clock (FME-7 IRQ counter), before the IRQ sample.
+        if let Some(ref mut cart) = self.cartridge {
+            cart.mapper.cpu_clock();
+        }
         self.sample_irq_input();
 
         // Reload DMA: the output unit just emptied the sample buffer. The

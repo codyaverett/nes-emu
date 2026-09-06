@@ -541,7 +541,13 @@ impl Ppu {
     fn read_vram(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
         self.drive_addr_bus(addr, mapper);
         match addr {
-            0x0000..=0x1FFF => mapper.ppu_read(addr),
+            0x0000..=0x1FFF => {
+                // Read first, then report the completed fetch: the MMC2
+                // latch flips after the byte at $xFD8/$xFE8 is out.
+                let value = mapper.ppu_read(addr);
+                mapper.ppu_fetch(addr);
+                value
+            }
             0x2000..=0x2FFF => {
                 let index = self.mirror_nametable_addr(addr, mapper.mirroring());
                 self.nametable_ram[index as usize]
@@ -1371,6 +1377,35 @@ mod tests {
         mapper.cpu_write(0x8000, 1);
         assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0000), 0x11);
         assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x1FFF), 0x11);
+    }
+
+    #[test]
+    fn pattern_reads_report_the_fetch_to_the_mapper_after_the_byte() {
+        // MMC2 with distinct 4 KB banks for the $FD and $FE latch states:
+        // a $2007 read of $0FE8 (tile $FE, high plane, row 0) returns the
+        // byte from the pre-flip bank and flips latch 0 for the next read,
+        // and a read of $0FD8 flips it back. This is the PPU-side proof
+        // that `read_vram` calls `ppu_fetch` after `ppu_read`.
+        let mut ppu = Ppu::new();
+        let mut chr = Vec::new();
+        for bank in 0u8..4 {
+            chr.extend(vec![0x20 | bank; 0x1000]);
+        }
+        let mut mapper =
+            crate::cartridge::mapper9::Mapper9::new(vec![0; 0x8000], chr, Mirroring::Vertical);
+        mapper.cpu_write(0xB000, 1); // latch 0 = $FD -> bank 1
+        mapper.cpu_write(0xC000, 2); // latch 0 = $FE -> bank 2 (power-on)
+
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0000), 0x22);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0FD8), 0x22);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0000), 0x21);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0FE8), 0x21);
+        assert_eq!(read_ppu_addr(&mut ppu, &mut mapper, 0x0000), 0x22);
+        // The background fetch path goes through the same read.
+        ppu.bg_next_tile_id = 0xFD;
+        ppu.v = 0;
+        ppu.fetch_pattern_high(&mut mapper); // $0FD8
+        assert_eq!(mapper.ppu_peek(0x0000), 0x21);
     }
 
     #[test]

@@ -7,12 +7,18 @@
 pub mod mapper;
 pub mod mapper0;
 pub mod mapper1;
+pub mod mapper10;
+pub mod mapper11;
 pub mod mapper2;
 pub mod mapper227;
 pub mod mapper3;
 pub mod mapper4;
 pub mod mapper5;
 pub mod mapper65;
+pub mod mapper66;
+pub mod mapper69;
+pub mod mapper7;
+pub mod mapper9;
 
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result};
@@ -159,7 +165,13 @@ impl Cartridge {
             3 => Box::new(mapper3::Mapper3::new(prg_rom, chr_rom, mirroring)),
             4 => Box::new(mapper4::Mapper4::new(prg_rom, chr_rom, mirroring)),
             5 => Box::new(mapper5::Mapper5::new(prg_rom, chr_rom, mirroring)),
+            7 => Box::new(mapper7::Mapper7::new(prg_rom, chr_rom, mirroring)),
+            9 => Box::new(mapper9::Mapper9::new(prg_rom, chr_rom, mirroring)),
+            10 => Box::new(mapper10::Mapper10::new(prg_rom, chr_rom, mirroring)),
+            11 => Box::new(mapper11::Mapper11::new(prg_rom, chr_rom, mirroring)),
             65 => Box::new(mapper65::Mapper65::new(prg_rom, chr_rom, mirroring)),
+            66 => Box::new(mapper66::Mapper66::new(prg_rom, chr_rom, mirroring)),
+            69 => Box::new(mapper69::Mapper69::new(prg_rom, chr_rom, mirroring)),
             227 => Box::new(mapper227::Mapper227::new(prg_rom, chr_rom, mirroring)),
             other => {
                 log::warn!(

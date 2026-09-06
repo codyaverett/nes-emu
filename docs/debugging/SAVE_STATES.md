@@ -139,6 +139,11 @@ blob length must match the loaded cartridge.
 | 5 MMC5 | exram 1 KB, exram_mode, prg_mode, prg_banks x 5, prg_ram_protect x 2, chr_mode, chr_banks 12 x u16, upper_chr_bank_bits, nametable_mapping x 4, fill mode, vertical split registers, IRQ registers and counter, ppu_is_rendering, multiplier operands |
 | 65 H3001 | mirroring u8, prg_banks x 3, chr_banks x 8 |
 | 227 | latch u16 |
+| 7 AxROM | prg_bank u8, upper_nametable bool |
+| 9 MMC2 / 10 MMC4 | prg_bank u8, chr_fd x 2, chr_fe x 2, latch_fe x 2 (bool), mirroring u8 |
+| 11 Color Dreams | mirroring u8, prg_bank u8, chr_bank u8 |
+| 66 GxROM | mirroring u8, prg_bank u8, chr_bank u8 |
+| 69 FME-7 | command u8, chr_banks x 8, prg_6000 u8, prg_banks x 3, mirroring u8, irq_enabled bool, irq_counter_enabled bool, irq_counter u16, irq_pending bool |
 
 `Mapper` gained `save_state(&self, &mut Writer)` and
 `load_state(&mut self, &mut Reader) -> Result<(), StateError>` with

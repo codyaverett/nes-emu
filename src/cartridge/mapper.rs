@@ -56,6 +56,19 @@ pub trait Mapper: Send {
     /// its IRQ counter here. No-op for everything else.
     fn ppu_a12_rise(&mut self) {}
 
+    /// A completed PPU read of pattern-table address `addr` ($0000-$1FFF),
+    /// called by the PPU after `ppu_read` returned the byte, for every
+    /// pattern fetch (background, sprite and $2007). MMC2/MMC4 flip their
+    /// CHR latches here when the fetch was tile $FD or $FE, so the byte
+    /// fetched comes from the old bank and the next one from the new. No-op
+    /// for everything else; `ppu_peek` must never call it.
+    fn ppu_fetch(&mut self, _addr: u16) {}
+
+    /// One CPU cycle has elapsed. Called by `System::tick` once per cycle,
+    /// before the CPU samples its IRQ input. FME-7 decrements its 16-bit IRQ
+    /// counter here. No-op for everything else.
+    fn cpu_clock(&mut self) {}
+
     /// Borrow the board's PRG RAM ($6000-$7FFF) for battery persistence.
     /// `None` for boards without PRG RAM. Returns the raw array even when
     /// the board has gated it off the bus (MMC3 $A001), since that gate
