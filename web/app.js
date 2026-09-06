@@ -109,6 +109,7 @@ async function startAudio() {
     if (ctx.sampleRate !== SAMPLE_RATE) {
       console.warn(`[nes] AudioContext runs at ${ctx.sampleRate} Hz, wanted ${SAMPLE_RATE}`);
     }
+    ctx.onstatechange = () => (stats.audio = ctx.state);
     await ctx.resume();
     audio.ready = true;
     stats.audio = ctx.state;
@@ -297,7 +298,17 @@ function toggleFullscreen() {
   else wrap.requestFullscreen?.();
 }
 
+/** Browsers may leave the context suspended until a user gesture on
+ *  the page; any key or click is one, so retry then. */
+function resumeAudioOnGesture() {
+  if (audio.ctx && audio.ctx.state !== "running") {
+    audio.ctx.resume().then(() => clearAudio()).catch(() => {});
+  }
+}
+window.addEventListener("pointerdown", resumeAudioOnGesture);
+
 window.addEventListener("keydown", (e) => {
+  resumeAudioOnGesture();
   if (e.repeat) return;
   const map = KEYS[e.code];
   if (map && emu) {
