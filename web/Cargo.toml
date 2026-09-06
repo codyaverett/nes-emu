@@ -1,6 +1,6 @@
 [package]
 name = "nes-emu-web"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 description = "wasm-bindgen wrapper exposing the nes-emu core to a web page"
 publish = false

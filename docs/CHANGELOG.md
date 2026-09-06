@@ -2,6 +2,34 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.13.0] - 2026-09-06
+
+Closes issues 49 and 50 (Phases 1 and 2 of docs/plans/WASM_WEB.md).
+
+### Added
+- WebAssembly build of the core. The SDL frontend now sits behind a
+  default `sdl` cargo feature; `cargo test --no-default-features` proves
+  the library builds without it. New workspace member `web/`
+  (`nes-emu-web`) wraps the core with wasm-bindgen as one `Emulator`
+  object: frames as RGBA, 44.1 kHz audio, buttons for both controllers,
+  reset, save and load states, battery bytes, cheat text and ROM CRC.
+- Browser page in `web/`: canvas with the same 8 pixel overscan crop as
+  the binary and a full-frame toggle, an AudioWorklet ring buffer paced
+  exactly like the native audio-clocked loop, the SDL key map for both
+  players, ROM picker and drag-and-drop (nothing leaves the tab), pause,
+  mute, reset, fullscreen and toasts. `npm run build && npm run serve`
+  in `web/` to play; `window.nesStats` reports fps, queued audio and
+  underruns for headless checks.
+- `System::battery_ram`, `set_battery_ram`, `battery_dirty` and
+  `mark_battery_saved` for frontends without a file system.
+- GitHub Actions workflow: native gates, the no-SDL library test, the
+  wasm32 build and a Node smoke test of 60 frames.
+- Verified in headless Chromium: Super Mario Bros at 60.0 emulated fps
+  with zero audio underruns over ten seconds. Firefox and Safari are
+  not yet verified.
+
+---
+
 ## [0.12.1] - 2026-09-06
 
 ### Added
