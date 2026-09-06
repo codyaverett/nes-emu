@@ -21,6 +21,7 @@ Contains debugging session notes and references:
 - `UI_FRAMEWORK.md` - In-window UI for the SDL binary: 8x8 bitmap font, command palette, Tool trait and Help page, App state, --screenshot and --ui-script debug flags (#30)
 - `SAVE_STATES.md` - Whole-machine save states: the NESS section format field by field, Snapshot trait and Mapper save/load hooks, F5/F8 slots and the States page, the field audit method (#39)
 - `WASM_WEB_BUILD.md` - SDL behind a cargo feature, the web/ wasm-bindgen wrapper crate, the 1 MB wasm stack overflow and its fix, Node smoke test and CI (#49)
+- `WASM_WEB_PAGE.md` - The browser page: canvas crop, AudioWorklet ring and audio-clocked pacing, key map, headless Chromium verification, the detached-buffer pacing bug (#50)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
@@ -43,6 +44,7 @@ Contains test output files (screenshots and debug logs):
 - `test_frame_*_debug.txt` - Debug text output for corresponding frames
 - `ui/palette.png`, `ui/help.png` - Command palette and Help page captured with --screenshot (#30)
 - `ui/states.png`, `ui/states-cursor.png`, `ui/states-osd.png`, `ui/states-loaded.png` - States page and the save/load OSD lines (#39)
+- `web/smb-chromium.png` - The web page playing SMB in headless Chromium (#50)
 
 ### `/summaries/`
 Contains summaries of fixes and improvements:

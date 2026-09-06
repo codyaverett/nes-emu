@@ -2,7 +2,19 @@
 
 wasm-bindgen wrapper and browser page for the emulator core
 (`docs/plans/WASM_WEB.md`). The wrapper (`src/lib.rs`) exposes one
-`Emulator` object; the page will live alongside it (issue #50).
+`Emulator` object; `index.html`, `app.js` and `audio-worklet.js` are the
+page (`docs/debugging/WASM_WEB_PAGE.md`).
+
+## Play
+
+```sh
+npm run build && npm run serve   # then open http://127.0.0.1:8080/
+```
+
+Click the screen or drop a `.nes` file on it. Keys match the SDL binary
+(listed under the canvas). Stats under the canvas show emulated fps,
+display rate, queued audio and underruns; `window.nesStats` holds the
+same numbers for scripts.
 
 ## Build
 

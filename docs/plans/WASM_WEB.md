@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Type:** Feature Plan
-**Status:** Phase 1 complete (docs/debugging/WASM_WEB_BUILD.md); Phases 2-5 open
+**Status:** Phases 1 and 2 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md); Phases 3-5 open
 **Tracking:** GitHub issues listed per phase below
 
 ## Goal
@@ -76,7 +76,7 @@ Feature-gate the SDL frontend, add the `web/` wasm-bindgen crate with the
 headless smoke test in Node or the wasm test runner that runs 60 frames of
 a synthetic ROM.
 
-### Phase 2: playable page (#50)
+### Phase 2: playable page (#50) - done (Chromium verified; Firefox and Safari need a human pass)
 Canvas, AudioWorklet, audio-clocked loop, keyboard, ROM picker and drag and
 drop, full-screen button, overscan crop matching the binary. Verified by
 playing SMB in Chrome, Firefox and Safari; frame timing checked against
