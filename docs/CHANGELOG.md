@@ -2,6 +2,17 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.12.1] - 2026-09-06
+
+### Added
+- On-screen toasts for every operation: pause and resume, frame advance,
+  reset, mute, volume, overscan crop, cheat toggles and APU channel mutes,
+  alongside the existing save-state and rewind messages. While paused with
+  no toast showing, a persistent banner reminds you that P resumes, N steps
+  and Backspace rewinds.
+
+---
+
 ## [0.12.0] - 2026-09-06
 
 Closes issues 41, 42, 43 and 44.

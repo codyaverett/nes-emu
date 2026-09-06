@@ -499,7 +499,7 @@ impl App {
 
     pub fn pause(&mut self) {
         if !self.paused {
-            log::info!("Paused");
+            self.show_message("Paused  (P resumes, N steps one frame)");
         }
         self.paused = true;
         self.frame_advance = false;
@@ -507,7 +507,7 @@ impl App {
 
     pub fn resume(&mut self) {
         if self.paused {
-            log::info!("Resumed");
+            self.show_message("Resumed");
         }
         self.paused = false;
         self.frame_advance = false;
@@ -525,10 +525,11 @@ impl App {
     pub fn request_frame_advance(&mut self) {
         self.paused = true;
         self.frame_advance = true;
+        self.show_message("Frame advance  (paused; P resumes)");
     }
 
     pub fn reset(&mut self) {
-        log::info!("Resetting NES...");
+        self.show_message("Reset");
         self.system.reset();
     }
 
@@ -538,7 +539,7 @@ impl App {
             *m = !*m;
             *m
         };
-        log::info!("Audio {}", if now { "muted" } else { "unmuted" });
+        self.show_message(if now { "Muted" } else { "Unmuted" });
         self.show_osd();
     }
 
@@ -556,17 +557,18 @@ impl App {
             *v = (*v + delta).clamp(0.0, 1.0);
             *v
         };
-        log::info!("Volume: {:.0}%", now * 100.0);
+        self.show_message(format!("Volume {:.0}%", now * 100.0));
         self.show_osd();
     }
 
     pub fn toggle_crop(&mut self) {
         self.crop_enabled = !self.crop_enabled;
         self.crop_dirty = true;
-        log::info!(
-            "Overscan crop {}",
-            if self.crop_enabled { "on" } else { "off" }
-        );
+        self.show_message(if self.crop_enabled {
+            "Overscan crop on (8 px hidden each edge)"
+        } else {
+            "Overscan crop off (full 256x240)"
+        });
     }
 
     pub fn quit(&mut self) {
@@ -616,11 +618,11 @@ impl App {
     pub fn toggle_cheat(&mut self, index: usize) -> Option<bool> {
         let enabled = self.system.cheats_mut().toggle(index)?;
         let code = self.system.cheats().get(index).map(|c| c.code.clone());
-        log::info!(
+        self.show_message(format!(
             "Cheat {} {}",
             code.unwrap_or_default(),
             if enabled { "enabled" } else { "disabled" }
-        );
+        ));
         self.cheat_error = None;
         self.save_cheats();
         Some(enabled)
@@ -703,17 +705,24 @@ impl App {
 
     pub fn mute_channel(&mut self, ch: usize) {
         self.system.apu.set_channel_muted(ch, true);
+        self.show_message(format!("{} muted", nes_emu::apu::CHANNEL_NAMES[ch]));
     }
 
     pub fn toggle_channel_mute(&mut self, ch: usize) {
         let muted = self.system.apu.channel_muted(ch);
         self.system.apu.set_channel_muted(ch, !muted);
+        self.show_message(format!(
+            "{} {}",
+            nes_emu::apu::CHANNEL_NAMES[ch],
+            if muted { "unmuted" } else { "muted" }
+        ));
     }
 
     pub fn unmute_all(&mut self) {
         for ch in 0..nes_emu::apu::CHANNEL_COUNT {
             self.system.apu.set_channel_muted(ch, false);
         }
+        self.show_message("All channels unmuted");
     }
 }
 

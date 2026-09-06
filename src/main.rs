@@ -638,11 +638,19 @@ fn main() -> Result<()> {
             }
         }
 
-        // Save-state and slot messages, in every mode.
+        // Toasts for every operation, in every mode; while paused with no
+        // toast showing, a persistent reminder of how to resume.
         if let Some(text) = app.osd_message().map(str::to_owned) {
             draw_message(&mut canvas, ui.font_scale, &text)?;
         } else {
             app.osd_text = None;
+            if app.paused && !app.rewinding {
+                draw_message(
+                    &mut canvas,
+                    ui.font_scale,
+                    "PAUSED   P resume   N step   Bksp rewind",
+                )?;
+            }
         }
 
         ui.draw(&mut canvas, &app)
