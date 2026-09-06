@@ -93,6 +93,7 @@ fix it>"`, so a bisect can be done from the test list alone.
 | `$6000` (blargg) | Signature `DE B0 61` at `$6001-$6003`, then `$6000 != 0x80` | `$6000 == 0x00`. `0x81` triggers a 10-frame delay, `System::reset()`, and one more frame before re-checking. |
 | Zero page `$F8` (2005 sprite tests) | CPU parked on `jmp *` or a KIL opcode | `$F8 == 1` |
 | Screen only (`cpu_timing_test6`) | Same halt detection | Nametable 0 contains `PASSED` |
+| Screen only, blargg 2010-era shell (`sprdma_and_dmc_dma`, `dmc_dma_during_read4`) | Same halt detection | Nametable 0 contains `Passed` (ROMs with a `check_crc`), or one of the CRCs listed in the ROM's source for ROMs that only `print_crc` because the correct output depends on the CPU-PPU power-up phase (`assert_screen_contains_any`) |
 | nestest | Instruction stepping with `trace_line` | Parsed PC/A/X/Y/P/SP (and CYC) equal for every log line |
 
 ## Current status (v0.1.0, 2026-09-04)
@@ -139,9 +140,11 @@ arms, so the unimplemented-opcode fallback was removed.
 | oam_read | 1 | 0 | |
 | oam_stress | 1 | 0 | passes since attribute bits 2-4 are masked (issue 14) |
 | mmc3_test_2 (6) | 5 | 1 | 4 since issue 11 (address bus driven one dot ahead of each fetch, 10-dot A12 filter); 6 is the alternate revision, exclusive with 5 |
-| **Total blargg** | **75** | **1** | |
+| sprdma_and_dmc_dma (2) | 2 | 0 | both since issue 27 (DMC DMA overlapping OAM DMA, docs/debugging/DMC_DMA.md) |
+| dmc_dma_during_read4 (5) | 5 | 0 | all since issue 27 (CPU stall, repeated `$2007`/`$4016` reads, indexed-store dummy read); double_2007_read passed before it too |
+| **Total blargg** | **82** | **1** | |
 
-Combined with nestest (7 tests): 82 integration tests pass, 1 is ignored,
+Combined with nestest (7 tests): 89 integration tests pass, 1 is ignored,
 plus the ignored game_frames fingerprint run.
 
 ### Expected progression

@@ -12,8 +12,9 @@
 //! it: every "arm, then step" sequence below runs one instruction before
 //! the 7-cycle interrupt sequence.
 
-use super::System;
+use super::{DmcDma, System};
 use crate::cartridge::Cartridge;
+use crate::input::ControllerButton;
 
 const RESET_VECTOR: u16 = 0x8000;
 const NMI_VECTOR: u16 = 0x9000;
@@ -421,4 +422,134 @@ fn nmi_during_irq_sequence_hijacks_its_vector() {
     let pushed_p = stack_byte(&sys, 0x0100 | sp_before.wrapping_sub(2) as u16);
     assert_eq!(pushed_p & 0x30, 0x20, "B clear as for any IRQ");
     assert_eq!(sys.cpu_step(), 2, "handler's first instruction runs");
+}
+
+// ---- DMC DMA (docs/debugging/DMC_DMA.md, issue 27) ----
+
+/// Program the DMC for a non-looping sample at $C000 with IRQ disabled at
+/// the fastest rate; `length` is the `$4013` value ((v << 4) | 1 bytes).
+fn program_dmc(system: &mut System, length: u8) {
+    system.write_byte(0x4010, 0x0F);
+    system.write_byte(0x4012, 0x00);
+    system.write_byte(0x4013, length);
+}
+
+#[test]
+fn dmc_dma_halting_a_4016_read_clocks_the_controller_twice() {
+    // LDA $4016 at the reset vector: opcode, two operand bytes, then the
+    // controller read on the instruction's fourth cycle.
+    let mut system = system_with_rom(|prg| {
+        prg[0] = 0xAD;
+        prg[1] = 0x16;
+        prg[2] = 0x40;
+    });
+    system.controller1.press(ControllerButton::B);
+    system.write_byte(0x4016, 0x01);
+    system.write_byte(0x4016, 0x00);
+    program_dmc(&mut system, 0x00);
+    // The load DMA halts on the get cycle 3 or 4 cycles after the $4015
+    // write (cycle W). For the halt to land on the $4016 read at W+4 the
+    // cycle W+3 must be a put; shift the write by one cycle otherwise.
+    if System::is_get_cycle(system.total_cycles + 1 + 3) {
+        system.tick();
+    }
+    let write_cycle = system.total_cycles + 1;
+    system.write_byte(0x4015, 0x10);
+    assert_eq!(
+        system.dmc_dma.map(|d| d.attempt),
+        Some(write_cycle + 4),
+        "load DMA scheduled on the get cycle 4 cycles after the write"
+    );
+
+    let cycles = system.cpu_step();
+    assert_eq!(
+        cycles,
+        4 + 3,
+        "load DMA stalls a read by 3 cycles (halt, dummy, get)"
+    );
+    // A single read would have returned bit 0 of A (released). The halt
+    // cycle clocked the controller once and the repeated read once more,
+    // so the CPU sees the second bit, B.
+    assert_eq!(system.cpu_a & 1, 1, "CPU read the second shifted bit (B)");
+    assert_eq!(
+        system.read_byte(0x4016) & 1,
+        0,
+        "the next read is the third bit (Select)"
+    );
+    assert!(system.dmc_dma.is_none(), "request consumed by the fetch");
+}
+
+#[test]
+fn reload_dma_stalls_four_cycles_and_can_halt_on_a_padded_cycle() {
+    // A stream of NOPs: two cycles each, the second one padded (a dummy
+    // read of the next opcode on hardware). 17-byte sample so several
+    // reload DMAs follow the load.
+    let mut system = system();
+    program_dmc(&mut system, 0x01);
+    system.write_byte(0x4015, 0x10);
+
+    let mut stalls = Vec::new();
+    let mut halt_ticks = Vec::new();
+    let mut budget = 2000;
+    while stalls.len() < 4 && budget > 0 {
+        let cycles = system.cpu_step();
+        if cycles != 2 {
+            stalls.push(cycles - 2);
+            halt_ticks.push(system.dmc_stall.0);
+        }
+        budget -= 1;
+    }
+    // The first fetch is the load DMA (3 cycles); every later one is a
+    // reload DMA that halts on a put cycle and needs an alignment cycle:
+    // 4 cycles, whether it lands on the opcode fetch or the padded cycle.
+    assert_eq!(stalls, vec![3, 4, 4, 4]);
+    // 432-cycle sample periods plus 4-cycle stalls keep the reloads in
+    // phase with the 2-cycle NOPs, so every one lands on the same tick.
+    assert_eq!(
+        halt_ticks[1..],
+        [2, 2, 2],
+        "reloads halted on the NOP's padded second cycle"
+    );
+}
+
+#[test]
+fn dmc_dma_inside_oam_dma_costs_two_extra_cycles() {
+    // STA $4014 at the reset vector, followed by NOPs.
+    let mut system = system_with_rom(|prg| {
+        prg[0] = 0x8D;
+        prg[1] = 0x14;
+        prg[2] = 0x40;
+    });
+    // Reference: OAM DMA alone, from the same cycle parity (the three
+    // DMC register writes below tick too).
+    let reference = {
+        let mut sys = system_with_rom(|prg| {
+            prg[0] = 0x8D;
+            prg[1] = 0x14;
+            prg[2] = 0x40;
+        });
+        program_dmc(&mut sys, 0x00);
+        sys.cpu_step()
+    };
+    assert!(reference == 4 + 513 || reference == 4 + 514);
+
+    // Schedule a reload-style request to land in the middle of the
+    // transfer: the attempt tick is a put cycle well inside the DMA.
+    program_dmc(&mut system, 0x00);
+    system.apu.write_register(0x4015, 0x10);
+    let attempt = System::next_cycle_with_parity(system.total_cycles + 200, false);
+    system.dmc_dma = Some(DmcDma {
+        attempt,
+        halted_at: None,
+    });
+    let cycles = system.cpu_step();
+    assert_eq!(
+        cycles,
+        reference + 2,
+        "DMC get plus one OAM alignment cycle"
+    );
+    assert!(
+        system.dmc_dma.is_none(),
+        "sample byte fetched during OAM DMA"
+    );
 }

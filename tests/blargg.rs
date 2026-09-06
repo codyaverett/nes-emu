@@ -1,6 +1,6 @@
 //! blargg (and related) test-ROM suites, one #[test] per ROM.
 //!
-//! Three reporting conventions are in play; see tests/common/mod.rs and
+//! Four reporting conventions are in play; see tests/common/mod.rs and
 //! docs/testing/TEST_ROM_HARNESS.md:
 //!
 //! * `$6000` protocol (instr_test-v5, cpu_interrupts_v2, ppu_vbl_nmi,
@@ -8,6 +8,8 @@
 //! * zero page `$F8` result code plus on-screen text (2005-era sprite hit
 //!   and sprite overflow ROMs)
 //! * on-screen text only (cpu_timing_test6)
+//! * on-screen text with a printed CRC, `Passed` or one of several
+//!   accepted CRCs (sprdma_and_dmc_dma, dmc_dma_during_read4)
 //!
 //! Suites that fail on the current emulator are `#[ignore]`d with the
 //! observed failure so `cargo test` stays green; later phases un-ignore
@@ -20,7 +22,9 @@
 
 mod common;
 
-use common::{assert_blargg_passes, assert_legacy_passes, assert_screen_contains};
+use common::{
+    assert_blargg_passes, assert_legacy_passes, assert_screen_contains, assert_screen_contains_any,
+};
 
 /// Frame budgets (NTSC frames, 60 per second of emulated time).
 const SHORT: u32 = 600; // 10 s
@@ -71,6 +75,22 @@ macro_rules! screen_test {
         #[ignore = $reason]
         fn $name() {
             assert_screen_contains($rel, $frames, $needle);
+        }
+    };
+}
+
+macro_rules! screen_any_test {
+    ($name:ident, $rel:literal, $frames:expr, [$($needle:literal),+ $(,)?]) => {
+        #[test]
+        fn $name() {
+            assert_screen_contains_any($rel, $frames, &[$($needle),+]);
+        }
+    };
+    ($name:ident, $rel:literal, $frames:expr, [$($needle:literal),+ $(,)?], ignore = $reason:literal) => {
+        #[test]
+        #[ignore = $reason]
+        fn $name() {
+            assert_screen_contains_any($rel, $frames, &[$($needle),+]);
         }
     };
 }
@@ -401,6 +421,59 @@ blargg_test!(
     SHORT
 );
 blargg_test!(apu_test_all, "apu_test/apu_test.nes", MEDIUM);
+
+// ---------------------------------------------------------------------
+// sprdma_and_dmc_dma: cycle cost of OAM DMA with DMC DMA landing inside
+// it (screen-only reporting; see docs/debugging/DMC_DMA.md)
+// ---------------------------------------------------------------------
+screen_test!(
+    sprdma_and_dmc_dma,
+    "sprdma_and_dmc_dma/sprdma_and_dmc_dma.nes",
+    MEDIUM,
+    "Passed"
+);
+screen_test!(
+    sprdma_and_dmc_dma_512,
+    "sprdma_and_dmc_dma/sprdma_and_dmc_dma_512.nes",
+    MEDIUM,
+    "Passed"
+);
+
+// ---------------------------------------------------------------------
+// dmc_dma_during_read4: DMC DMA colliding with $2007 and $4016 accesses
+// (screen-only reporting; ROMs whose output depends on the CPU-PPU
+// power-up phase list every acceptable CRC)
+// ---------------------------------------------------------------------
+screen_any_test!(
+    dmc_dma_2007_read,
+    "dmc_dma_during_read4/dma_2007_read.nes",
+    MEDIUM,
+    ["159A7A8F", "5E3DF9C4"]
+);
+screen_test!(
+    dmc_dma_2007_write,
+    "dmc_dma_during_read4/dma_2007_write.nes",
+    MEDIUM,
+    "Passed"
+);
+screen_test!(
+    dmc_dma_4016_read,
+    "dmc_dma_during_read4/dma_4016_read.nes",
+    MEDIUM,
+    "Passed"
+);
+screen_any_test!(
+    dmc_dma_double_2007_read,
+    "dmc_dma_during_read4/double_2007_read.nes",
+    MEDIUM,
+    ["85CFD627", "F018C287", "440EF923", "E52F41A5"]
+);
+screen_test!(
+    dmc_dma_read_write_2007,
+    "dmc_dma_during_read4/read_write_2007.nes",
+    MEDIUM,
+    "Passed"
+);
 
 // ---------------------------------------------------------------------
 // apu_reset: APU state at power and after reset (uses the 0x81 reset

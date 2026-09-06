@@ -160,8 +160,10 @@ The DMC now has a working output unit and memory reader:
   period, adjusting `output_level` by +/-2 (so DMC audio is now produced).
 - Memory reader uses a request/supply handshake so the APU never needs a
   reference to the CPU bus: `apu.dmc_fetch_address() -> Option<u16>` asks for
-  a byte, `System` reads it, `apu.dmc_supply_sample(byte)` delivers it. The
-  frame loop does this once per instruction.
+  a byte, `System` reads it, `apu.dmc_supply_sample(byte)` delivers it.
+  Since issue 27 the read is a real DMA that halts the CPU
+  (docs/debugging/DMC_DMA.md); before that the frame loop did it once per
+  instruction.
 - When the byte count reaches zero: loop flag set -> restart the sample; else
   IRQ enabled -> set `dmc.interrupt`.
 - `$4015` write: bit 4 set restarts the sample if none is playing, bit 4 clear

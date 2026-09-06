@@ -32,6 +32,15 @@ files below record the author and the readme that accompanies them.
 | `oam_read/` | Shay Green (blargg) | `$2004` OAM reads | `$6000` |
 | `oam_stress/` | Shay Green (blargg) | OAM read/write stress across power/reset alignments | `$6000` |
 | `mmc3_test_2/` | Shay Green (blargg) | MMC3 IRQ counter, A12 clocking, scanline timing | `$6000` |
+| `sprdma_and_dmc_dma/` | Shay Green (blargg) | Cycle cost of OAM DMA with a DMC DMA landing inside it, 16 offsets, two alignments | Screen text (`Passed` after a CRC check) |
+| `dmc_dma_during_read4/` | Shay Green (blargg) | DMC DMA colliding with `$2007` reads/writes and `$4016` reads; adjacent-cycle `$2007` accesses | Screen text (`Passed`, or a listed CRC for phase-dependent ROMs) |
+
+Upstream carries no readme for `sprdma_and_dmc_dma/`; the ROMs print a
+table of OAM DMA cycle counts and check its CRC themselves. The
+`dmc_dma_during_read4/readme.txt` here is the `source/readme.txt` from
+upstream (the only readme that suite ships); the per-ROM expected output
+and acceptable CRCs are in the `.s` sources in the upstream repository and
+are reproduced in `tests/blargg.rs` and docs/debugging/DMC_DMA.md.
 
 ## Reporting protocols
 
@@ -49,6 +58,13 @@ listed in the suite's readme.
 
 **Screen only (`cpu_timing_test6`).** Prints `PASSED` or `FAIL OP :$xx`
 into nametable 0; the harness decodes the nametable as ASCII.
+
+**Screen only, 2010-era shell (`sprdma_and_dmc_dma`,
+`dmc_dma_during_read4`).** Prints its results and a CRC-32 of everything
+printed. ROMs with a `check_crc` print `Passed` or `Failed`; ROMs whose
+correct output depends on the CPU-PPU power-up phase (`dma_2007_read`,
+`double_2007_read`) only print the CRC, and the harness accepts any of the
+values listed in the ROM's source. All park the CPU on `jmp *` when done.
 
 **nestest.** Run from PC `$C000` with `P = $24`, `SP = $FD` and `CYC = 7`
 and compare each instruction's registers and cycle count to

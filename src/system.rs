@@ -34,9 +34,27 @@ pub struct System {
     /// the start of `cpu_step` and used to pad an instruction out to its
     /// documented cycle count (see `tick`).
     instr_cycles: u16,
-    /// True while an OAM DMA ran inside the current instruction, which makes
-    /// the ticked count legitimately exceed the opcode's declared count.
-    dma_in_instr: bool,
+    /// Cycles that OAM or DMC DMA inserted into the current instruction.
+    /// The instruction is padded to its declared count plus this, so an
+    /// opcode whose padded (non-access) cycles come after the halt does
+    /// not lose them to the stall.
+    dma_cycles: u16,
+    /// Outstanding DMC DMA request (see `DmcDma` and
+    /// docs/debugging/DMC_DMA.md). Raised when the APU's sample buffer
+    /// needs a byte, serviced by `read_byte` on the next CPU read cycle at
+    /// or after its attempt tick, or inside OAM DMA.
+    dmc_dma: Option<DmcDma>,
+    /// True while the instruction being executed is a read-modify-write,
+    /// whose padded cycle stands for the 6502's dummy write of the
+    /// unmodified value. A DMC DMA cannot halt the CPU on a write, so the
+    /// padding loop does not offer that cycle to the DMA unit. Every other
+    /// padded cycle is a read on hardware (dummy or internal).
+    padding_is_write: bool,
+    /// Tick (1-based `instr_cycles`) of the current instruction at which a
+    /// DMC DMA halted the CPU, and the number of cycles the stall inserted.
+    /// The interrupt sample tick moves later by that many cycles when the
+    /// halt landed at or before it (see `take_interrupt_snapshot`).
+    dmc_stall: (u16, u16),
     audio_sample_counter: f64,
     /// Samples produced by `tick` during the current frame while
     /// `audio_capture` is set; drained into the caller's buffer once per
@@ -94,6 +112,48 @@ pub struct System {
     battery_saved_hash: Cell<Option<u64>>,
 }
 
+/// A scheduled DMC DMA. The APU's memory reader asks for a byte either
+/// because `$4015` just enabled the channel with an empty sample buffer
+/// (a "load" DMA) or because the output unit emptied the buffer (a
+/// "reload" DMA). The DMA unit tries to halt the CPU from `attempt`
+/// onwards; a halt only succeeds on a CPU read cycle (or on any cycle while
+/// OAM DMA already holds the CPU). Once halted the unit spends a dummy
+/// cycle, an alignment cycle if the following cycle is not a get, and then
+/// reads the sample byte on a get cycle. nesdev "DMA".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DmcDma {
+    /// First `total_cycles` value at which the halt may be attempted. A
+    /// load DMA targets the get cycle 3 or 4 cycles after the `$4015`
+    /// write; a reload DMA targets the first put cycle after the buffer
+    /// emptied.
+    attempt: u64,
+    /// `total_cycles` of the successful halt cycle, once it has happened
+    /// (only meaningful inside OAM DMA, where the DMC get is deferred to
+    /// the next free get cycle).
+    halted_at: Option<u64>,
+}
+
+/// Opcodes whose padded cycle (see `cpu_step`) is the 6502's dummy write
+/// of the unmodified value: ASL, ROL, LSR, ROR, INC, DEC and the
+/// unofficial SLO, RLA, SRE, RRA, DCP, ISC in their memory addressing modes.
+fn is_read_modify_write(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        0x06 | 0x16 | 0x0E | 0x1E   // ASL
+        | 0x26 | 0x36 | 0x2E | 0x3E // ROL
+        | 0x46 | 0x56 | 0x4E | 0x5E // LSR
+        | 0x66 | 0x76 | 0x6E | 0x7E // ROR
+        | 0xE6 | 0xF6 | 0xEE | 0xFE // INC
+        | 0xC6 | 0xD6 | 0xCE | 0xDE // DEC
+        | 0x03 | 0x07 | 0x0F | 0x13 | 0x17 | 0x1B | 0x1F // SLO
+        | 0x23 | 0x27 | 0x2F | 0x33 | 0x37 | 0x3B | 0x3F // RLA
+        | 0x43 | 0x47 | 0x4F | 0x53 | 0x57 | 0x5B | 0x5F // SRE
+        | 0x63 | 0x67 | 0x6F | 0x73 | 0x77 | 0x7B | 0x7F // RRA
+        | 0xC3 | 0xC7 | 0xCF | 0xD3 | 0xD7 | 0xDB | 0xDF // DCP
+        | 0xE3 | 0xE7 | 0xEF | 0xF3 | 0xF7 | 0xFB | 0xFF // ISC
+    )
+}
+
 impl Default for System {
     fn default() -> Self {
         Self::new()
@@ -118,7 +178,10 @@ impl System {
             null_mapper: NullMapper,
             battery_saved_hash: Cell::new(None),
             instr_cycles: 0,
-            dma_in_instr: false,
+            dma_cycles: 0,
+            dmc_dma: None,
+            dmc_stall: (0, 0),
+            padding_is_write: false,
             audio_sample_counter: 0.0,
             audio_out: Vec::new(),
             audio_capture: false,
@@ -150,7 +213,9 @@ impl System {
         self.controller1.reset();
         self.controller2.reset();
         self.instr_cycles = 0;
-        self.dma_in_instr = false;
+        self.dma_cycles = 0;
+        self.dmc_dma = None;
+        self.dmc_stall = (0, 0);
 
         // The reset sequence takes 7 cycles on hardware (nestest's log starts
         // at CYC:7, PPU dot 21). Two of them are the vector fetch.
@@ -230,6 +295,16 @@ impl System {
         self.apu.step();
         self.sample_irq_input();
 
+        // Reload DMA: the output unit just emptied the sample buffer. The
+        // DMA unit schedules its halt attempt for the next put cycle.
+        if self.dmc_dma.is_none() && self.apu.dmc_fetch_address().is_some() {
+            let attempt = Self::next_cycle_with_parity(self.total_cycles + 1, false);
+            self.dmc_dma = Some(DmcDma {
+                attempt,
+                halted_at: None,
+            });
+        }
+
         if self.audio_capture {
             const CYCLES_PER_SAMPLE: f64 = 1_789_773.0 / 44_100.0;
             self.audio_acc.0 += self.apu.get_output();
@@ -263,9 +338,180 @@ impl System {
 
     fn read_byte(&mut self, addr: u16) -> u8 {
         self.tick();
+        // A scheduled DMC DMA halts the CPU on this read cycle; the read
+        // is repeated after the DMA (see `dmc_dma_stall`).
+        if self.dmc_halt_due() {
+            self.dmc_dma_stall(Some(addr));
+        }
         // NMI is sampled one dot into the next tick (see `tick`), so an
         // access that drops the line here withdraws the edge in time.
         self.bus_read(addr)
+    }
+
+    /// DMA units can only read on "get" cycles and write on "put" cycles,
+    /// which alternate with the APU clock. The CPU and APU power up in a
+    /// random phase, so which CPU cycle parity is a get is arbitrary; this
+    /// is the convention OAM DMA has always used (reads on odd
+    /// `total_cycles`).
+    fn is_get_cycle(tick: u64) -> bool {
+        tick % 2 == 1
+    }
+
+    /// First tick at or after `from` that is a get (`get == true`) or a put
+    /// cycle.
+    fn next_cycle_with_parity(from: u64, get: bool) -> u64 {
+        if Self::is_get_cycle(from) == get {
+            from
+        } else {
+            from + 1
+        }
+    }
+
+    /// True when a scheduled DMC DMA may halt the CPU on the cycle that
+    /// just ticked. A request whose sample has since been stopped (a
+    /// `$4015` write cleared the channel) is dropped.
+    fn dmc_halt_due(&mut self) -> bool {
+        match self.dmc_dma {
+            Some(req) if req.attempt <= self.total_cycles => {
+                if self.apu.dmc_fetch_address().is_some() {
+                    true
+                } else {
+                    self.dmc_dma = None;
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// DMC DMA landing on a CPU read of `addr`; the tick that just ran is
+    /// the halt cycle. The DMA unit then spends a dummy cycle, an alignment
+    /// cycle if the next cycle is not a get, and reads the sample byte on
+    /// the get. The CPU resumes by performing the interrupted read again
+    /// (the caller's `bus_read`). While halted, the 2A03 keeps driving the
+    /// interrupted read on every no-operation cycle, which is what makes a
+    /// `$2007` or `$4016` read during DMC DMA lose data
+    /// (docs/debugging/DMC_DMA.md).
+    fn dmc_dma_stall(&mut self, addr: Option<u16>) {
+        let halt_tick = self.instr_cycles;
+        let start = self.total_cycles;
+        // Halt cycle.
+        self.repeat_halted_read(addr, true);
+        // Dummy cycle.
+        self.tick();
+        self.repeat_halted_read(addr, false);
+        // Alignment cycle.
+        if !Self::is_get_cycle(self.total_cycles + 1) {
+            self.tick();
+            self.repeat_halted_read(addr, false);
+        }
+        // The DMA get.
+        self.tick();
+        self.dmc_fetch();
+        // The CPU's own read, repeated.
+        self.tick();
+        let stall = (self.total_cycles - start) as u16;
+        self.dma_cycles += stall;
+        self.dmc_stall = (halt_tick, stall);
+    }
+
+    /// The read a halted CPU keeps performing. Each no-operation cycle is a
+    /// separate access for PPU and APU registers (`$2007` advances its
+    /// address every time). The joypad output enables stay asserted across
+    /// adjacent reads of the same register, so the controllers see one
+    /// clock for the whole halt/dummy/alignment set: only the halt cycle's
+    /// read is performed for `$4016`/`$4017`.
+    ///
+    /// `None` stands for a padded cycle (see `cpu_step`): the dummy or
+    /// internal read the 6502 performs there has no modelled address, so
+    /// nothing is repeated.
+    fn repeat_halted_read(&mut self, addr: Option<u16>, halt_cycle: bool) {
+        let Some(addr) = addr else { return };
+        if matches!(addr, 0x4016 | 0x4017) && !halt_cycle {
+            return;
+        }
+        let _ = self.bus_read(addr);
+    }
+
+    /// The DMC get: read the sample byte through the bus and hand it to the
+    /// APU. Clears the request whether or not the APU still wants a byte.
+    fn dmc_fetch(&mut self) {
+        if let Some(addr) = self.apu.dmc_fetch_address() {
+            let byte = self.bus_read(addr);
+            self.apu.dmc_supply_sample(byte);
+        }
+        self.dmc_dma = None;
+    }
+
+    /// Inside OAM DMA the CPU is already halted, so a scheduled DMC DMA
+    /// halts on any cycle. Called after every OAM DMA tick.
+    fn dmc_halt_during_oam(&mut self) {
+        if let Some(req) = &mut self.dmc_dma {
+            if req.halted_at.is_none() && req.attempt <= self.total_cycles {
+                req.halted_at = Some(self.total_cycles);
+            }
+        }
+    }
+
+    /// True when a DMC DMA halted during OAM DMA is owed its get on the
+    /// next cycle: the first get cycle at least two cycles after the halt
+    /// (halt, dummy, then the get; an alignment cycle is implied when the
+    /// cycle after the dummy is a put).
+    fn dmc_get_due_next_cycle(&self) -> bool {
+        let next = self.total_cycles + 1;
+        Self::is_get_cycle(next)
+            && matches!(self.dmc_dma, Some(DmcDma { halted_at: Some(h), .. }) if next >= h + 2)
+    }
+
+    /// OAM DMA (nesdev "DMA"). The DMA unit halts the CPU on the cycle
+    /// after the `$4014` write, spends an alignment cycle if needed so its
+    /// reads land on get cycles, then performs 256 get/put pairs: 513 or
+    /// 514 cycles. Every cycle ticks, so the PPU and APU keep running.
+    ///
+    /// A DMC DMA scheduled while OAM DMA holds the CPU halts on any cycle,
+    /// its get takes precedence over the OAM get, and OAM DMA then needs
+    /// one alignment cycle to get back onto a get: 2 extra cycles in the
+    /// common case, 1 when the DMC halt lands on the second-to-last put and
+    /// 3 when it lands on the last put.
+    fn oam_dma(&mut self, page: u16) {
+        let start = self.total_cycles;
+        // Halt cycle.
+        self.tick();
+        self.dmc_halt_during_oam();
+        let mut index = 0u16;
+        while index < 256 {
+            if !Self::is_get_cycle(self.total_cycles + 1) {
+                // Alignment cycle.
+                self.tick();
+                self.dmc_halt_during_oam();
+                continue;
+            }
+            if self.dmc_get_due_next_cycle() {
+                self.tick();
+                self.dmc_fetch();
+                continue;
+            }
+            self.tick();
+            self.dmc_halt_during_oam();
+            let data = self.bus_read(page | index);
+            self.tick();
+            self.dmc_halt_during_oam();
+            self.bus_write(0x2004, data);
+            index += 1;
+        }
+        // A DMC DMA that halted near the end of the transfer still owes
+        // its get.
+        if let Some(DmcDma {
+            halted_at: Some(_), ..
+        }) = self.dmc_dma
+        {
+            while !self.dmc_get_due_next_cycle() {
+                self.tick();
+            }
+            self.tick();
+            self.dmc_fetch();
+        }
+        self.dma_cycles += (self.total_cycles - start) as u16;
     }
 
     fn bus_read(&mut self, addr: u16) -> u8 {
@@ -305,22 +551,23 @@ impl System {
                 let (ppu, mapper) = self.ppu_and_mapper();
                 ppu.write_register(0x2000 | (addr & 0x0007), value, mapper)
             }
-            0x4000..=0x4013 | 0x4015 => self.apu.write_register(addr, value),
-            0x4014 => {
-                // OAM DMA. The CPU is halted while the DMA unit performs 256
-                // read/write pairs through the bus, each pair two cycles, plus
-                // one dummy cycle, plus one more alignment cycle when the DMA
-                // starts on an odd CPU cycle. Every access ticks, so the PPU
-                // and APU keep running underneath, as on hardware.
-                self.dma_in_instr = true;
-                let page = (value as u16) << 8;
-                self.tick();
-                if self.total_cycles % 2 == 1 {
-                    self.tick();
-                }
-                for i in 0..256u16 {
-                    let data = self.read_byte(page | i);
-                    self.write_byte(0x2004, data);
+            0x4000..=0x4013 => self.apu.write_register(addr, value),
+            0x4014 => self.oam_dma((value as u16) << 8),
+            0x4015 => {
+                self.apu.write_register(addr, value);
+                // Load DMA: enabling the DMC with an empty sample buffer
+                // schedules a halt on the get cycle 3 or 4 cycles after
+                // this write. Clearing the channel cancels any request.
+                match self.apu.dmc_fetch_address() {
+                    Some(_) if self.dmc_dma.is_none() => {
+                        let attempt = Self::next_cycle_with_parity(self.total_cycles + 3, true);
+                        self.dmc_dma = Some(DmcDma {
+                            attempt,
+                            halted_at: None,
+                        });
+                    }
+                    Some(_) => {}
+                    None => self.dmc_dma = None,
                 }
             }
             0x4016 => {
@@ -336,6 +583,15 @@ impl System {
             }
             _ => {}
         }
+    }
+
+    /// The dummy read an indexed store performs on the cycle before its
+    /// write, at the address before the page-crossing fix-up (the high
+    /// byte of `base` with the low byte of `addr`). It is a real bus access:
+    /// `STA $2007,X` reads `$2007` and then writes it
+    /// (dmc_dma_during_read4/read_write_2007).
+    fn dummy_read_before_indexed_store(&mut self, base: u16, addr: u16) {
+        let _ = self.read_byte((base & 0xFF00) | (addr & 0x00FF));
     }
 
     fn read_word(&mut self, addr: u16) -> u16 {
@@ -383,7 +639,9 @@ impl System {
     /// totals match hardware, and OAM DMA runs inline in the `$4014` write.
     fn cpu_step(&mut self) -> u16 {
         self.instr_cycles = 0;
-        self.dma_in_instr = false;
+        self.dma_cycles = 0;
+        self.dmc_stall = (0, 0);
+        self.padding_is_write = false;
         self.irq_hist = 0;
         self.poll_tick = 0;
         self.no_poll = false;
@@ -400,22 +658,26 @@ impl System {
             None => self.execute_opcode() as u16,
         };
 
-        // DMC memory reader: the APU asks for a byte at the end of the
-        // instruction. The 4-cycle CPU stall is not modelled, so the fetch
-        // deliberately bypasses the ticking bus.
-        if let Some(addr) = self.apu.dmc_fetch_address() {
-            let byte = self.peek(addr);
-            self.apu.dmc_supply_sample(byte);
-        }
+        // The DMC memory reader's fetch is a real DMA: it halts the CPU on
+        // a read cycle inside the instruction (see `read_byte` and
+        // `dmc_dma_stall`), so there is nothing to do for it here.
 
+        // DMA cycles inserted into the instruction (OAM DMA in the `$4014`
+        // write, DMC DMA on any read) stretch it by exactly their length.
         debug_assert!(
-            self.dma_in_instr || self.instr_cycles <= declared,
+            self.instr_cycles <= declared + self.dma_cycles,
             "instruction performed {} bus accesses but declares {} cycles",
             self.instr_cycles,
-            declared
+            declared + self.dma_cycles
         );
-        while self.instr_cycles < declared {
+        // Padded cycles are reads on hardware (except the RMW dummy write),
+        // so a scheduled DMC DMA halts on them like on any other read; the
+        // stall lengthens the instruction by its own cycles.
+        while self.instr_cycles < declared + self.dma_cycles {
             self.tick();
+            if !self.padding_is_write && self.dmc_halt_due() {
+                self.dmc_dma_stall(None);
+            }
         }
 
         self.take_interrupt_snapshot(declared);
@@ -489,7 +751,15 @@ impl System {
             self.sampled_irq = false;
             return;
         }
-        let tick = self.sample_tick(declared);
+        let mut tick = self.sample_tick(declared);
+        // A DMC DMA that halted the CPU at or before the sample tick pushed
+        // the real penultimate cycle later by the length of the stall (the
+        // halted CPU neither polls nor progresses; the interrupted cycle is
+        // re-run after the DMA).
+        let (halt_tick, stall) = self.dmc_stall;
+        if halt_tick != 0 && halt_tick <= tick {
+            tick += stall;
+        }
         self.sampled_nmi = self.nmi_pending && self.nmi_seen_tick <= tick;
         let irq_level = tick <= 16 && self.irq_hist & (1 << (tick - 1)) != 0;
         let i_set = self.i_flag_for_poll.unwrap_or(self.cpu_status & 0x04 != 0);
@@ -500,6 +770,7 @@ impl System {
         let opcode = self.read_byte(self.cpu_pc);
         let old_pc = self.cpu_pc;
         self.cpu_pc = self.cpu_pc.wrapping_add(1);
+        self.padding_is_write = is_read_modify_write(opcode);
 
         // Log first few instructions for debugging
         static mut INSTRUCTION_COUNT: u32 = 0;
@@ -855,6 +1126,7 @@ impl System {
                 let lo = self.read_byte(base) as u16;
                 let hi = self.read_byte((base + 1) & 0xFF) as u16;
                 let addr = ((hi << 8) | lo).wrapping_add(self.cpu_y as u16);
+                self.dummy_read_before_indexed_store((hi << 8) | lo, addr);
                 self.write_byte(addr, self.cpu_a);
                 6
             }
@@ -1030,15 +1302,19 @@ impl System {
             }
             0x99 => {
                 // STA absolute,Y
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_y as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_y as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
+                self.dummy_read_before_indexed_store(base, addr);
                 self.write_byte(addr, self.cpu_a);
                 5
             }
             0x9D => {
                 // STA absolute,X
-                let addr = self.read_word(self.cpu_pc).wrapping_add(self.cpu_x as u16);
+                let base = self.read_word(self.cpu_pc);
+                let addr = base.wrapping_add(self.cpu_x as u16);
                 self.cpu_pc = self.cpu_pc.wrapping_add(2);
+                self.dummy_read_before_indexed_store(base, addr);
                 self.write_byte(addr, self.cpu_a);
                 5
             }

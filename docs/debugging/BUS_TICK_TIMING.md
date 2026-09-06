@@ -100,4 +100,12 @@ inside it.
   flag timing. Both are Phase 5 material now that the bus is cycle-exact.
   Landed as issues 12 (docs/debugging/VBLANK_NMI_TIMING.md) and 18
   (docs/debugging/APU_FRAME_COUNTER.md).
-- The DMC memory reader still bypasses the bus and does not stall the CPU.
+- The DMC memory reader bypassed the bus and did not stall the CPU. Landed
+  as issue 27 (docs/debugging/DMC_DMA.md): the fetch is a real DMA that
+  halts the CPU on a read cycle, repeats the interrupted read, and overlaps
+  OAM DMA per nesdev. Two consequences for the padding scheme described
+  above: padded cycles are offered to the DMA unit as the reads they stand
+  for (except the RMW dummy write), and `cpu_step` pads to
+  `declared + dma_cycles` so a stall in the middle of an instruction does
+  not swallow its padded cycles (`dma_in_instr` is gone). Indexed stores
+  now perform their dummy read instead of being padded.

@@ -137,7 +137,8 @@ The old divider fired at 29828 from cycle 0 and reported 13 (too early).
 - Envelope and pitch behaviour in real games needs a human listen; the
   tests only cover what the CPU can read back and the emulator's own
   channel state.
-- The DMC memory reader still bypasses the bus and does not stall the CPU.
+- The DMC memory reader bypassed the bus and did not stall the CPU; landed
+  as issue 27 (docs/debugging/DMC_DMA.md).
 
 ## Sweep units (issue #21)
 

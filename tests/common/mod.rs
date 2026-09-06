@@ -238,6 +238,22 @@ pub fn assert_legacy_passes(rel: &str, max_frames: u32) {
     );
 }
 
+/// Assert that a ROM which only reports on screen printed at least one of
+/// `needles`. Used for ROMs whose correct output depends on the CPU-PPU
+/// power-up phase and which therefore list several acceptable CRCs.
+pub fn assert_screen_contains_any(rel: &str, max_frames: u32, needles: &[&str]) {
+    let result = run_legacy(rel, max_frames);
+    assert!(
+        needles.iter().any(|needle| result.screen.contains(needle)),
+        "{} failed: expected screen text to contain one of {:?} (halted={}, {} frames)\n--- screen ---\n{}",
+        rel,
+        needles,
+        result.halted,
+        result.frames,
+        result.screen
+    );
+}
+
 /// Assert that a ROM which only reports on screen printed `needle`.
 pub fn assert_screen_contains(rel: &str, max_frames: u32, needle: &str) {
     let result = run_legacy(rel, max_frames);
