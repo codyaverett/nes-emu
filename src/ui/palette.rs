@@ -2,24 +2,22 @@
 //!
 //! Typing filters the registry with a case-insensitive subsequence match,
 //! Up/Down move the selection, Enter runs it, Escape (or the backquote
-//! that opened it) closes. Characters come from key codes rather than SDL
+//! that opened it) closes. Characters come from `Key::Char` rather than SDL
 //! text-input events so the scripted `--ui-script` path behaves exactly
 //! like a real keyboard.
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::WindowCanvas;
+use super::key::Key;
 
 use super::commands::{self, Command};
 use super::font;
+use super::painter::{Color, Painter};
 use super::tool::{self, ACCENT, DIM_TEXT, TEXT};
 
 /// Matches shown at once; the list scrolls to keep the selection visible.
 pub const MAX_ROWS: usize = 8;
 
-const PANEL: Color = Color::RGBA(10, 12, 28, 220);
-const SELECTED: Color = Color::RGBA(60, 90, 170, 255);
+const PANEL: Color = Color::rgba(10, 12, 28, 220);
+const SELECTED: Color = Color::rgba(60, 90, 170, 255);
 
 pub enum PaletteEvent {
     Continue,
@@ -46,11 +44,11 @@ impl Palette {
         commands::filter(registry, &self.input)
     }
 
-    pub fn handle_key(&mut self, key: Keycode, registry: &[Command]) -> PaletteEvent {
+    pub fn handle_key(&mut self, key: Key, registry: &[Command]) -> PaletteEvent {
         let matches = self.matches(registry);
         match key {
-            Keycode::Escape | Keycode::Backquote => return PaletteEvent::Close,
-            Keycode::Return | Keycode::KpEnter => {
+            Key::Escape | Key::Backquote => return PaletteEvent::Close,
+            Key::Return => {
                 return match matches.get(self.selected) {
                     Some(&index) => PaletteEvent::Run(
                         index,
@@ -59,13 +57,13 @@ impl Palette {
                     None => PaletteEvent::Continue,
                 };
             }
-            Keycode::Up => self.selected = self.selected.saturating_sub(1),
-            Keycode::Down => {
+            Key::Up => self.selected = self.selected.saturating_sub(1),
+            Key::Down => {
                 if self.selected + 1 < matches.len() {
                     self.selected += 1;
                 }
             }
-            Keycode::Backspace => {
+            Key::Backspace => {
                 self.input.pop();
                 self.selected = 0;
             }
@@ -81,11 +79,11 @@ impl Palette {
 
     pub fn draw(
         &self,
-        canvas: &mut WindowCanvas,
+        painter: &mut dyn Painter,
         font_scale: u32,
         registry: &[Command],
     ) -> Result<(), String> {
-        let (window_w, _) = canvas.output_size()?;
+        let (window_w, _) = painter.size();
         let matches = self.matches(registry);
         let pad = tool::padding(font_scale);
         let line = font::line_height(font_scale) as i32;
@@ -97,15 +95,14 @@ impl Palette {
         let panel_h = (pad + row_h + pad + visible as i32 * row_h + pad) as u32;
         let columns = ((panel_w as i32 - 2 * pad) / line).max(1) as usize;
 
-        canvas.set_draw_color(PANEL);
-        canvas.fill_rect(Rect::new(panel_x, panel_y, panel_w, panel_h))?;
+        painter.fill_rect(panel_x, panel_y, panel_w, panel_h, PANEL)?;
 
         // Input line with a block cursor.
         let text_x = panel_x + pad;
         let mut y = panel_y + pad;
         let prompt = format!("> {}_", self.input);
         font::draw_text(
-            canvas,
+            painter,
             text_x,
             y,
             font_scale,
@@ -113,13 +110,12 @@ impl Palette {
             &tool::clip(&prompt, columns),
         )?;
         y += row_h;
-        canvas.set_draw_color(DIM_TEXT);
-        canvas.fill_rect(Rect::new(text_x, y, panel_w - 2 * pad as u32, 1))?;
+        painter.fill_rect(text_x, y, panel_w - 2 * pad as u32, 1, DIM_TEXT)?;
         y += pad;
 
         if matches.is_empty() {
             return font::draw_text(
-                canvas,
+                painter,
                 text_x,
                 y,
                 font_scale,
@@ -135,18 +131,18 @@ impl Palette {
             let command = &registry[index];
             let is_selected = row == self.selected;
             if is_selected {
-                canvas.set_draw_color(SELECTED);
-                canvas.fill_rect(Rect::new(
+                painter.fill_rect(
                     panel_x + pad / 2,
                     y - pad / 2,
                     panel_w - pad as u32,
                     row_h as u32,
-                ))?;
+                    SELECTED,
+                )?;
             }
             let text = format!("{:<name_cols$} {}", command.name, command.description);
             let colour = if is_selected { TEXT } else { DIM_TEXT };
             font::draw_text(
-                canvas,
+                painter,
                 text_x,
                 y,
                 font_scale,
@@ -159,16 +155,10 @@ impl Palette {
     }
 }
 
-/// The character a key press types into the input, if any. SDL key codes
-/// for printable ASCII equal the character value; Shift is ignored since
-/// matching is case-insensitive.
-fn printable(key: Keycode) -> Option<char> {
-    let code = key as i32;
-    if (32..=126).contains(&code) && key != Keycode::Backquote {
-        char::from_u32(code as u32)
-    } else {
-        None
-    }
+/// The character a key press types into the input, if any (see
+/// `Key::printable`; Shift is ignored since matching is case-insensitive).
+fn printable(key: Key) -> Option<char> {
+    key.printable()
 }
 
 #[cfg(test)]
@@ -189,15 +179,15 @@ mod tests {
         let registry = builtin_commands();
         let mut p = Palette::new();
         assert_eq!(names(&p, &registry).len(), registry.len());
-        p.handle_key(Keycode::Down, &registry);
+        p.handle_key(Key::Down, &registry);
         assert_eq!(p.selected, 1);
-        for k in [Keycode::V, Keycode::O, Keycode::L] {
+        for k in [Key::Char('v'), Key::Char('o'), Key::Char('l')] {
             p.handle_key(k, &registry);
         }
         assert_eq!(p.input, "vol");
         assert_eq!(p.selected, 0);
         assert_eq!(names(&p, &registry), ["volume up", "volume down"]);
-        p.handle_key(Keycode::Backspace, &registry);
+        p.handle_key(Key::Backspace, &registry);
         assert_eq!(p.input, "vo");
     }
 
@@ -205,10 +195,10 @@ mod tests {
     fn enter_runs_selected_match() {
         let registry = builtin_commands();
         let mut p = Palette::new();
-        for k in [Keycode::V, Keycode::O, Keycode::L, Keycode::Down] {
+        for k in [Key::Char('v'), Key::Char('o'), Key::Char('l'), Key::Down] {
             p.handle_key(k, &registry);
         }
-        match p.handle_key(Keycode::Return, &registry) {
+        match p.handle_key(Key::Return, &registry) {
             PaletteEvent::Run(i, arg) => {
                 assert_eq!(registry[i].name, "volume down");
                 assert_eq!(arg, "");
@@ -222,15 +212,10 @@ mod tests {
         let registry = builtin_commands();
         let mut p = Palette::new();
         for ch in "cheat add sxiopo".chars() {
-            let key = if ch == ' ' {
-                Keycode::Space
-            } else {
-                Keycode::from_i32(ch as i32).unwrap()
-            };
-            p.handle_key(key, &registry);
+            p.handle_key(Key::Char(ch), &registry);
         }
         assert_eq!(names(&p, &registry), ["cheat add"]);
-        match p.handle_key(Keycode::Return, &registry) {
+        match p.handle_key(Key::Return, &registry) {
             PaletteEvent::Run(i, arg) => {
                 assert_eq!(registry[i].name, "cheat add");
                 assert_eq!(arg, "sxiopo");
@@ -244,19 +229,19 @@ mod tests {
         let registry = builtin_commands();
         let mut p = Palette::new();
         for k in [
-            Keycode::M,
-            Keycode::E,
-            Keycode::M,
-            Keycode::Space,
-            Keycode::C,
-            Keycode::Num0,
-            Keycode::Num0,
-            Keycode::Num0,
+            Key::Char('m'),
+            Key::Char('e'),
+            Key::Char('m'),
+            Key::Char(' '),
+            Key::Char('c'),
+            Key::Char('0'),
+            Key::Char('0'),
+            Key::Char('0'),
         ] {
             p.handle_key(k, &registry);
         }
         assert_eq!(names(&p, &registry), ["mem"]);
-        match p.handle_key(Keycode::Return, &registry) {
+        match p.handle_key(Key::Return, &registry) {
             PaletteEvent::Run(i, arg) => {
                 assert_eq!(registry[i].name, "mem");
                 assert_eq!(arg, "c000");
@@ -270,17 +255,17 @@ mod tests {
         let registry = builtin_commands();
         let mut p = Palette::new();
         for _ in 0..50 {
-            p.handle_key(Keycode::Down, &registry);
+            p.handle_key(Key::Down, &registry);
         }
         assert_eq!(p.selected, registry.len() - 1);
-        p.handle_key(Keycode::Up, &registry);
+        p.handle_key(Key::Up, &registry);
         assert_eq!(p.selected, registry.len() - 2);
         assert!(matches!(
-            p.handle_key(Keycode::Escape, &registry),
+            p.handle_key(Key::Escape, &registry),
             PaletteEvent::Close
         ));
         assert!(matches!(
-            p.handle_key(Keycode::Backquote, &registry),
+            p.handle_key(Key::Backquote, &registry),
             PaletteEvent::Close
         ));
     }
@@ -289,22 +274,37 @@ mod tests {
     fn enter_with_no_match_does_nothing() {
         let registry = builtin_commands();
         let mut p = Palette::new();
-        for k in [Keycode::Q, Keycode::Q, Keycode::Q] {
+        for k in [Key::Char('q'), Key::Char('q'), Key::Char('q')] {
             p.handle_key(k, &registry);
         }
         assert!(names(&p, &registry).is_empty());
         assert!(matches!(
-            p.handle_key(Keycode::Return, &registry),
+            p.handle_key(Key::Return, &registry),
             PaletteEvent::Continue
         ));
     }
 
     #[test]
     fn printable_maps_ascii_keys() {
-        assert_eq!(printable(Keycode::A), Some('a'));
-        assert_eq!(printable(Keycode::Space), Some(' '));
-        assert_eq!(printable(Keycode::Num3), Some('3'));
-        assert_eq!(printable(Keycode::Backquote), None);
-        assert_eq!(printable(Keycode::F1), None);
+        assert_eq!(printable(Key::Char('a')), Some('a'));
+        assert_eq!(printable(Key::Char(' ')), Some(' '));
+        assert_eq!(printable(Key::Char('3')), Some('3'));
+        assert_eq!(printable(Key::Backquote), None);
+        assert_eq!(printable(Key::F1), None);
+        assert_eq!(printable(Key::Return), None);
+    }
+
+    #[test]
+    fn browser_codes_type_into_the_palette() {
+        let registry = builtin_commands();
+        let mut p = Palette::new();
+        for code in ["KeyV", "KeyO", "KeyL", "ShiftLeft", "Space", "Digit1"] {
+            p.handle_key(Key::from_browser_code(code), &registry);
+        }
+        assert_eq!(p.input, "vol 1");
+        assert!(matches!(
+            p.handle_key(Key::from_browser_code("Backquote"), &registry),
+            PaletteEvent::Close
+        ));
     }
 }

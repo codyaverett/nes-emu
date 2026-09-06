@@ -1,12 +1,11 @@
 //! Help page: key bindings and every registered command.
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::render::WindowCanvas;
+use crate::ui::key::Key;
 
 use crate::ui::app::App;
 use crate::ui::commands::NAME_COLUMNS;
 use crate::ui::font;
+use crate::ui::painter::{Color, Painter};
 use crate::ui::tool::{self, Tool, ToolEvent};
 use crate::ui::KEY_BINDINGS;
 
@@ -54,22 +53,22 @@ impl Tool for Help {
         "Help"
     }
 
-    fn handle_key(&mut self, key: Keycode, _app: &mut App) -> ToolEvent {
+    fn handle_key(&mut self, key: Key, _app: &mut App) -> ToolEvent {
         match key {
-            Keycode::Up => self.scroll = self.scroll.saturating_sub(1),
-            Keycode::Down => self.scroll += 1,
-            Keycode::PageUp => self.scroll = self.scroll.saturating_sub(10),
-            Keycode::PageDown => self.scroll += 10,
-            Keycode::Home => self.scroll = 0,
-            Keycode::Q | Keycode::Return => return ToolEvent::Close,
+            Key::Up => self.scroll = self.scroll.saturating_sub(1),
+            Key::Down => self.scroll += 1,
+            Key::PageUp => self.scroll = self.scroll.saturating_sub(10),
+            Key::PageDown => self.scroll += 10,
+            Key::Home => self.scroll = 0,
+            Key::Char('q') | Key::Return => return ToolEvent::Close,
             _ => {}
         }
         ToolEvent::Continue
     }
 
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String> {
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String> {
         let lines = Help::lines(app);
-        let (columns, rows) = tool::body_grid(canvas, font_scale)?;
+        let (columns, rows) = tool::body_grid(painter, font_scale);
         // Never scroll past the point where the last line is at the top.
         let first = self.scroll.min(lines.len().saturating_sub(1));
         let x = tool::padding(font_scale);
@@ -77,7 +76,7 @@ impl Tool for Help {
         let step = tool::line_step(font_scale);
         for Line(text, colour) in lines.iter().skip(first).take(rows) {
             font::draw_text(
-                canvas,
+                painter,
                 x,
                 y,
                 font_scale,

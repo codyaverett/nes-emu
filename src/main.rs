@@ -21,10 +21,46 @@ use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use nes_emu::system::System;
 
 use ui::app::{App, AudioQueue};
+use ui::key::Key;
+use ui::painter::Painter;
 use ui::tools::ToolId;
 use ui::Ui;
 
 const SCALE: u32 = 3;
+
+/// The window as a `Painter`: every overlay rectangle becomes one
+/// `set_draw_color` plus `fill_rect` on the canvas, exactly the calls the
+/// UI made before the trait existed, so screenshots are unchanged.
+struct SdlPainter<'a> {
+    canvas: &'a mut WindowCanvas,
+    size: (u32, u32),
+}
+
+impl<'a> SdlPainter<'a> {
+    fn new(canvas: &'a mut WindowCanvas) -> Result<Self, String> {
+        let size = canvas.output_size()?;
+        Ok(SdlPainter { canvas, size })
+    }
+}
+
+impl Painter for SdlPainter<'_> {
+    fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    fn fill_rect(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        colour: ui::painter::Color,
+    ) -> Result<(), String> {
+        self.canvas
+            .set_draw_color(Color::RGBA(colour.r, colour.g, colour.b, colour.a));
+        self.canvas.fill_rect(Rect::new(x, y, w, h))
+    }
+}
 
 /// Samples the emulator keeps queued ahead of the audio device when audio
 /// is the master clock: about 3.3 NES frames (roughly 55 ms of latency).
@@ -247,55 +283,100 @@ fn parse_ui_script(spec: &str) -> Result<Vec<Option<ScriptKey>>> {
     Ok(out)
 }
 
+/// The frontend-neutral key for an SDL key code: printable ASCII codes
+/// (32..=126, which SDL numbers by their character) become `Key::Char`,
+/// named keys map one to one, anything else is `Key::Other`.
+fn sdl_key(key: Keycode) -> Key {
+    let code = key as i32;
+    if key == Keycode::Backquote {
+        return Key::Backquote;
+    }
+    if (32..=126).contains(&code) {
+        return char::from_u32(code as u32).map_or(Key::Other, Key::Char);
+    }
+    match key {
+        Keycode::Escape => Key::Escape,
+        Keycode::Return | Keycode::KpEnter => Key::Return,
+        Keycode::Backspace => Key::Backspace,
+        Keycode::Delete => Key::Delete,
+        Keycode::Insert => Key::Insert,
+        Keycode::Tab => Key::Tab,
+        Keycode::Up => Key::Up,
+        Keycode::Down => Key::Down,
+        Keycode::Left => Key::Left,
+        Keycode::Right => Key::Right,
+        Keycode::PageUp => Key::PageUp,
+        Keycode::PageDown => Key::PageDown,
+        Keycode::Home => Key::Home,
+        Keycode::End => Key::End,
+        Keycode::F1 => Key::F1,
+        Keycode::F2 => Key::F2,
+        Keycode::F3 => Key::F3,
+        Keycode::F4 => Key::F4,
+        Keycode::F5 => Key::F5,
+        Keycode::F6 => Key::F6,
+        Keycode::F7 => Key::F7,
+        Keycode::F8 => Key::F8,
+        _ => Key::Other,
+    }
+}
+
 /// Key press routing: the UI first, then hotkeys, then the controller.
-fn key_down(key: Keycode, app: &mut App, ui: &mut Ui) {
+/// While the palette or a page is open the UI consumes every press, so
+/// nothing reaches the hotkeys or the controller.
+fn key_down(keycode: Keycode, app: &mut App, ui: &mut Ui) {
+    let key = sdl_key(keycode);
     if ui.handle_key(key, app) {
         return;
     }
     match key {
-        Keycode::Escape => app.quit(),
-        Keycode::F1 => ui.open_tool(ToolId::Help),
-        Keycode::R => app.reset(),
-        Keycode::P => app.toggle_pause(),
-        Keycode::N => app.request_frame_advance(),
-        Keycode::M => app.toggle_mute(),
-        Keycode::Equals | Keycode::Plus => app.volume_up(),
-        Keycode::Minus => app.volume_down(),
+        Key::Escape => app.quit(),
+        Key::F1 => ui.open_tool(ToolId::Help),
+        Key::Char('r') => app.reset(),
+        Key::Char('p') => app.toggle_pause(),
+        Key::Char('n') => app.request_frame_advance(),
+        Key::Char('m') => app.toggle_mute(),
+        Key::Char('=') | Key::Char('+') => app.volume_up(),
+        Key::Char('-') => app.volume_down(),
         // Save states (docs/debugging/SAVE_STATES.md).
-        Keycode::F5 => app.save_state(),
-        Keycode::F6 => app.prev_slot(),
-        Keycode::F7 => app.next_slot(),
-        Keycode::F8 => app.load_state(),
+        Key::F5 => app.save_state(),
+        Key::F6 => app.prev_slot(),
+        Key::F7 => app.next_slot(),
+        Key::F8 => app.load_state(),
         // Rewind while held (docs/debugging/UI_FRAMEWORK.md, issue #44);
         // the release below ends it.
-        Keycode::Backspace => app.rewind_start(),
+        Key::Backspace => app.rewind_start(),
         _ => {}
     }
-    if let Some((player, button)) = map_keycode_to_button(key) {
+    if let Some((player, button)) = map_keycode_to_button(keycode) {
         controller_for(app, player).press(button);
     }
 }
 
 /// One line of text over the bottom of the picture ("Saved slot 3").
-fn draw_message(canvas: &mut WindowCanvas, font_scale: u32, text: &str) -> Result<()> {
-    let (w, h) = canvas
-        .output_size()
-        .map_err(|e| anyhow::anyhow!("output size: {}", e))?;
+fn draw_message(painter: &mut dyn Painter, font_scale: u32, text: &str) -> Result<()> {
+    use ui::painter::Color;
+    let (w, h) = painter.size();
     let pad = 4 * font_scale as i32;
     let line = ui::font::line_height(font_scale) as i32;
     let y = h as i32 - line - 3 * pad;
-    canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
-    canvas
-        .fill_rect(Rect::new(0, y - pad, w, (line + 2 * pad) as u32))
+    painter
+        .fill_rect(
+            0,
+            y - pad,
+            w,
+            (line + 2 * pad) as u32,
+            Color::rgba(0, 0, 0, 180),
+        )
         .map_err(|e| anyhow::anyhow!("Failed to draw message background: {}", e))?;
-    ui::font::draw_text(canvas, pad, y, font_scale, Color::RGB(255, 255, 255), text)
+    ui::font::draw_text(painter, pad, y, font_scale, Color::rgb(255, 255, 255), text)
         .map_err(|e| anyhow::anyhow!("Failed to draw message: {}", e))
 }
 
 /// Releases reach the controller in every UI mode so a button held when
 /// the palette opened does not stick.
 fn key_up(key: Keycode, app: &mut App) {
-    if key == Keycode::Backspace {
+    if sdl_key(key) == Key::Backspace {
         // A no-op when the press went to the palette or a page.
         app.rewind_stop();
     }
@@ -321,40 +402,46 @@ fn write_screenshot(canvas: &WindowCanvas, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn draw_osd(canvas: &mut WindowCanvas, app: &App) -> Result<()> {
+fn draw_osd(painter: &mut dyn Painter, app: &App) -> Result<()> {
+    use ui::painter::Color;
     let osd_x = 10 * SCALE as i32;
     let osd_y = 10 * SCALE as i32;
     let osd_width = 200 * SCALE;
     let osd_height = 20 * SCALE;
 
     // Background (semi-transparent black)
-    canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
-    canvas
-        .fill_rect(Rect::new(osd_x, osd_y, osd_width, osd_height))
+    painter
+        .fill_rect(
+            osd_x,
+            osd_y,
+            osd_width,
+            osd_height,
+            Color::rgba(0, 0, 0, 180),
+        )
         .map_err(|e| anyhow::anyhow!("Failed to draw OSD background: {}", e))?;
 
     if app.is_muted() {
         // Muted indicator (red)
-        canvas.set_draw_color(Color::RGB(255, 0, 0));
-        canvas
-            .fill_rect(Rect::new(
+        painter
+            .fill_rect(
                 osd_x + 2 * SCALE as i32,
                 osd_y + 2 * SCALE as i32,
                 osd_width - 4 * SCALE,
                 osd_height - 4 * SCALE,
-            ))
+                Color::rgb(255, 0, 0),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to draw mute indicator: {}", e))?;
     } else {
         // Volume bar (green)
         let filled_width = ((osd_width - 4 * SCALE) as f32 * app.volume()) as u32;
-        canvas.set_draw_color(Color::RGB(0, 255, 0));
-        canvas
-            .fill_rect(Rect::new(
+        painter
+            .fill_rect(
                 osd_x + 2 * SCALE as i32,
                 osd_y + 2 * SCALE as i32,
                 filled_width,
                 osd_height - 4 * SCALE,
-            ))
+                Color::rgb(0, 255, 0),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to draw volume bar: {}", e))?;
     }
     Ok(())
@@ -627,34 +714,39 @@ fn main() -> Result<()> {
             .copy(&texture, Some(src_rect), None)
             .map_err(|e| anyhow::anyhow!("Canvas copy failed: {}", e))?;
 
-        // Volume / mute indicator, only while audio is on.
-        if let Some(until) = app.osd_until {
-            if Instant::now() < until {
-                if app.audio_enabled() {
-                    draw_osd(&mut canvas, &app)?;
+        {
+            let mut painter =
+                SdlPainter::new(&mut canvas).map_err(|e| anyhow::anyhow!("output size: {}", e))?;
+
+            // Volume / mute indicator, only while audio is on.
+            if let Some(until) = app.osd_until {
+                if Instant::now() < until {
+                    if app.audio_enabled() {
+                        draw_osd(&mut painter, &app)?;
+                    }
+                } else {
+                    app.osd_until = None;
                 }
+            }
+
+            // Toasts for every operation, in every mode; while paused with
+            // no toast showing, a persistent reminder of how to resume.
+            if let Some(text) = app.osd_message().map(str::to_owned) {
+                draw_message(&mut painter, ui.font_scale, &text)?;
             } else {
-                app.osd_until = None;
+                app.osd_text = None;
+                if app.paused && !app.rewinding {
+                    draw_message(
+                        &mut painter,
+                        ui.font_scale,
+                        "PAUSED   P resume   N step   Bksp rewind",
+                    )?;
+                }
             }
-        }
 
-        // Toasts for every operation, in every mode; while paused with no
-        // toast showing, a persistent reminder of how to resume.
-        if let Some(text) = app.osd_message().map(str::to_owned) {
-            draw_message(&mut canvas, ui.font_scale, &text)?;
-        } else {
-            app.osd_text = None;
-            if app.paused && !app.rewinding {
-                draw_message(
-                    &mut canvas,
-                    ui.font_scale,
-                    "PAUSED   P resume   N step   Bksp rewind",
-                )?;
-            }
+            ui.draw(&mut painter, &app)
+                .map_err(|e| anyhow::anyhow!("UI draw failed: {}", e))?;
         }
-
-        ui.draw(&mut canvas, &app)
-            .map_err(|e| anyhow::anyhow!("UI draw failed: {}", e))?;
 
         // Screenshots read the back buffer, so they must precede present.
         let mut i = 0;
@@ -747,5 +839,34 @@ mod tests {
         assert!(parse_ui_script("x*0").is_err());
         assert!(parse_ui_script("x*many").is_err());
         assert!(parse_ui_script("nosuchkey").is_err());
+    }
+
+    #[test]
+    fn sdl_keys_map_to_ui_keys() {
+        assert_eq!(sdl_key(Keycode::A), Key::Char('a'));
+        assert_eq!(sdl_key(Keycode::Num3), Key::Char('3'));
+        assert_eq!(sdl_key(Keycode::Space), Key::Char(' '));
+        assert_eq!(sdl_key(Keycode::Semicolon), Key::Char(';'));
+        assert_eq!(sdl_key(Keycode::Equals), Key::Char('='));
+        assert_eq!(sdl_key(Keycode::Minus), Key::Char('-'));
+        assert_eq!(sdl_key(Keycode::Backquote), Key::Backquote);
+        assert_eq!(sdl_key(Keycode::KpEnter), Key::Return);
+        assert_eq!(sdl_key(Keycode::Return), Key::Return);
+        assert_eq!(sdl_key(Keycode::Tab), Key::Tab);
+        assert_eq!(sdl_key(Keycode::PageDown), Key::PageDown);
+        assert_eq!(sdl_key(Keycode::F8), Key::F8);
+        assert_eq!(sdl_key(Keycode::F9), Key::Other);
+        assert_eq!(sdl_key(Keycode::LShift), Key::Other);
+        // The same keys through the browser mapping agree.
+        for (sdl, code) in [
+            (Keycode::A, "KeyA"),
+            (Keycode::Num3, "Digit3"),
+            (Keycode::Equals, "Equal"),
+            (Keycode::Backquote, "Backquote"),
+            (Keycode::Return, "Enter"),
+            (Keycode::F5, "F5"),
+        ] {
+            assert_eq!(sdl_key(sdl), Key::from_browser_code(code), "{code}");
+        }
     }
 }

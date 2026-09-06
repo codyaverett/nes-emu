@@ -7,11 +7,10 @@
 //! lines can be stacked with no extra leading.
 //!
 //! Text is drawn with one filled rectangle per set pixel, which is more
-//! than fast enough for the few hundred characters an overlay shows.
+//! than fast enough for the few hundred characters an overlay shows, and
+//! is the only text implementation on every backend (`painter::Painter`).
 
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::WindowCanvas;
+use super::painter::{Color, Painter};
 
 /// Width and height of a glyph cell in unscaled pixels.
 pub const GLYPH_SIZE: u32 = 8;
@@ -257,14 +256,13 @@ pub fn line_height(scale: u32) -> u32 {
 /// Draw `text` with its top-left corner at (`x`, `y`), each font pixel
 /// becoming a `scale` by `scale` block of `colour`.
 pub fn draw_text(
-    canvas: &mut WindowCanvas,
+    painter: &mut dyn Painter,
     x: i32,
     y: i32,
     scale: u32,
     colour: Color,
     text: &str,
 ) -> Result<(), String> {
-    canvas.set_draw_color(colour);
     let step = (GLYPH_SIZE * scale) as i32;
     for (column, ch) in text.chars().enumerate() {
         let origin_x = x + column as i32 * step;
@@ -273,7 +271,7 @@ pub fn draw_text(
             for col in 0..GLYPH_SIZE {
                 if bits & (0x80 >> col) != 0 {
                     let px = origin_x + (col * scale) as i32;
-                    canvas.fill_rect(Rect::new(px, origin_y, scale, scale))?;
+                    painter.fill_rect(px, origin_y, scale, scale, colour)?;
                 }
             }
         }
@@ -317,5 +315,20 @@ mod tests {
         assert_eq!(glyph_for('\u{e9}'), glyph_for('?'));
         assert_eq!(text_width("abc", 2), 48);
         assert_eq!(line_height(3), 24);
+    }
+
+    #[test]
+    fn draw_text_fills_one_block_per_set_pixel() {
+        use crate::ui::painter::RgbaPainter;
+        let mut p = RgbaPainter::new(16, 16);
+        p.fill_rect(0, 0, 16, 16, Color::rgb(0, 0, 0)).unwrap();
+        // '!' at scale 2: row 0 is 0b0011_0000, so columns 2-3 are set.
+        draw_text(&mut p, 0, 0, 2, Color::rgb(255, 255, 255), "!").unwrap();
+        assert_eq!(p.pixel(4, 0), [255, 255, 255, 255]);
+        assert_eq!(p.pixel(7, 1), [255, 255, 255, 255]);
+        assert_eq!(p.pixel(3, 0), [0, 0, 0, 255]);
+        assert_eq!(p.pixel(8, 0), [0, 0, 0, 255]);
+        // Row 5 of '!' is blank.
+        assert_eq!(p.pixel(4, 10), [0, 0, 0, 255]);
     }
 }

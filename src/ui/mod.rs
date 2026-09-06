@@ -10,15 +10,16 @@
 pub mod app;
 pub mod commands;
 pub mod font;
+pub mod key;
+pub mod painter;
 pub mod palette;
 pub mod tool;
 pub mod tools;
 
-use sdl2::keyboard::Keycode;
-use sdl2::render::WindowCanvas;
-
 use app::App;
 use commands::Action;
+use key::Key;
+use painter::Painter;
 use palette::{Palette, PaletteEvent};
 use tool::{Tool, ToolEvent};
 use tools::ToolId;
@@ -83,7 +84,7 @@ impl Ui {
     }
 
     /// Route a key press. Returns true when the UI consumed it.
-    pub fn handle_key(&mut self, key: Keycode, app: &mut App) -> bool {
+    pub fn handle_key(&mut self, key: Key, app: &mut App) -> bool {
         enum Outcome {
             NotConsumed,
             Consumed,
@@ -93,7 +94,7 @@ impl Ui {
         }
         let outcome = match &mut self.mode {
             Mode::Game => {
-                if key == Keycode::Backquote {
+                if key == Key::Backquote {
                     Outcome::OpenPalette
                 } else {
                     Outcome::NotConsumed
@@ -105,7 +106,7 @@ impl Ui {
                 PaletteEvent::Run(index, arg) => Outcome::Run(index, arg),
             },
             Mode::Tool(tool) => {
-                if key == Keycode::Escape && !tool.captures_escape() {
+                if key == Key::Escape && !tool.captures_escape() {
                     Outcome::Close
                 } else {
                     match tool.handle_key(key, app) {
@@ -163,13 +164,13 @@ impl Ui {
     }
 
     /// Draw the overlay for the current mode over the game frame.
-    pub fn draw(&self, canvas: &mut WindowCanvas, app: &App) -> Result<(), String> {
+    pub fn draw(&self, painter: &mut dyn Painter, app: &App) -> Result<(), String> {
         match &self.mode {
             Mode::Game => Ok(()),
-            Mode::Palette(palette) => palette.draw(canvas, self.font_scale, &app.commands),
+            Mode::Palette(palette) => palette.draw(painter, self.font_scale, &app.commands),
             Mode::Tool(tool) => {
-                tool::draw_frame(canvas, self.font_scale, tool.title())?;
-                tool.draw(canvas, self.font_scale, app)
+                tool::draw_frame(painter, self.font_scale, tool.title())?;
+                tool.draw(painter, self.font_scale, app)
             }
         }
     }

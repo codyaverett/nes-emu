@@ -8,22 +8,20 @@
 //! the `App` cheat methods, which rewrite the `.cht` file. A rejected code
 //! is shown in red below the list and the page stays open.
 //!
-//! Text entry reads characters from key codes like the palette does, so
+//! Text entry reads characters from `Key::Char` like the palette does, so
 //! Shift is ignored (codes are case-insensitive) and `:` / `?` are typed
 //! as `;` / `/`; `App::add_cheat` maps them back.
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::WindowCanvas;
+use crate::ui::key::Key;
 
 use crate::ui::app::App;
 use crate::ui::font;
+use crate::ui::painter::{Color, Painter};
 use crate::ui::tool::{self, Tool, ToolEvent, ACCENT, DIM_TEXT, TEXT};
 
-const ERROR: Color = Color::RGB(255, 96, 96);
-const SELECTED: Color = Color::RGBA(60, 90, 170, 255);
-const ENABLED: Color = Color::RGB(120, 230, 120);
+const ERROR: Color = Color::rgb(255, 96, 96);
+const SELECTED: Color = Color::rgba(60, 90, 170, 255);
+const ENABLED: Color = Color::rgb(120, 230, 120);
 
 /// Widest code the list column reserves; longer codes push the
 /// description right.
@@ -62,36 +60,36 @@ impl Cheats {
         self.cursor = self.cursor.min(len.saturating_sub(1));
     }
 
-    fn handle_list_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent {
+    fn handle_list_key(&mut self, key: Key, app: &mut App) -> ToolEvent {
         let len = app.system.cheats().len();
         match key {
-            Keycode::Up => self.cursor = self.cursor.saturating_sub(1),
-            Keycode::Down => {
+            Key::Up => self.cursor = self.cursor.saturating_sub(1),
+            Key::Down => {
                 if self.cursor + 1 < len {
                     self.cursor += 1;
                 }
             }
-            Keycode::PageUp => self.cursor = self.cursor.saturating_sub(10),
-            Keycode::PageDown => self.cursor = (self.cursor + 10).min(len.saturating_sub(1)),
-            Keycode::Home => self.cursor = 0,
-            Keycode::End => self.cursor = len.saturating_sub(1),
-            Keycode::Space | Keycode::Return | Keycode::KpEnter => {
+            Key::PageUp => self.cursor = self.cursor.saturating_sub(10),
+            Key::PageDown => self.cursor = (self.cursor + 10).min(len.saturating_sub(1)),
+            Key::Home => self.cursor = 0,
+            Key::End => self.cursor = len.saturating_sub(1),
+            Key::Char(' ') | Key::Return => {
                 if len > 0 {
                     app.toggle_cheat(self.cursor);
                 }
             }
-            Keycode::D | Keycode::Delete | Keycode::Backspace => {
+            Key::Char('d') | Key::Delete | Key::Backspace => {
                 if len > 0 {
                     app.remove_cheat(self.cursor);
                     self.clamp_cursor(app);
                 }
             }
-            Keycode::A | Keycode::Insert => {
+            Key::Char('a') | Key::Insert => {
                 self.mode = Mode::EnterCode {
                     buffer: String::new(),
                 };
             }
-            Keycode::E => {
+            Key::Char('e') => {
                 if let Some(cheat) = app.system.cheats().get(self.cursor) {
                     self.mode = Mode::EditDescription {
                         index: self.cursor,
@@ -99,7 +97,7 @@ impl Cheats {
                     };
                 }
             }
-            Keycode::Q => return ToolEvent::Close,
+            Key::Char('q') => return ToolEvent::Close,
             _ => {}
         }
         ToolEvent::Continue
@@ -107,10 +105,10 @@ impl Cheats {
 
     /// Shared editing of the entry buffer; returns true when Enter was
     /// pressed and the caller should act on the text.
-    fn edit_buffer(buffer: &mut String, key: Keycode) -> bool {
+    fn edit_buffer(buffer: &mut String, key: Key) -> bool {
         match key {
-            Keycode::Return | Keycode::KpEnter => return true,
-            Keycode::Backspace => {
+            Key::Return => return true,
+            Key::Backspace => {
                 buffer.pop();
             }
             _ => {
@@ -122,8 +120,8 @@ impl Cheats {
         false
     }
 
-    fn handle_entry_key(&mut self, key: Keycode, app: &mut App) {
-        if key == Keycode::Escape {
+    fn handle_entry_key(&mut self, key: Key, app: &mut App) {
+        if key == Key::Escape {
             // Cancelling also drops the error the entry produced.
             app.cheat_error = None;
             self.mode = Mode::List;
@@ -202,7 +200,7 @@ impl Tool for Cheats {
         !matches!(self.mode, Mode::List)
     }
 
-    fn handle_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent {
+    fn handle_key(&mut self, key: Key, app: &mut App) -> ToolEvent {
         self.clamp_cursor(app);
         match self.mode {
             Mode::List => self.handle_list_key(key, app),
@@ -219,9 +217,9 @@ impl Tool for Cheats {
         self.clamp_cursor(app);
     }
 
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String> {
-        let (columns, rows) = tool::body_grid(canvas, font_scale)?;
-        let (window_w, _) = canvas.output_size()?;
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String> {
+        let (columns, rows) = tool::body_grid(painter, font_scale);
+        let (window_w, _) = painter.size();
         let pad = tool::padding(font_scale);
         let x = pad;
         let step = tool::line_step(font_scale);
@@ -244,7 +242,7 @@ impl Tool for Cheats {
                 .unwrap_or_default()
         );
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -255,7 +253,7 @@ impl Tool for Cheats {
 
         if cheats.is_empty() {
             font::draw_text(
-                canvas,
+                painter,
                 x,
                 y,
                 font_scale,
@@ -269,13 +267,13 @@ impl Tool for Cheats {
             for (index, cheat) in cheats.iter().enumerate().skip(first).take(list_rows) {
                 let selected = index == self.cursor;
                 if selected {
-                    canvas.set_draw_color(SELECTED);
-                    canvas.fill_rect(Rect::new(
+                    painter.fill_rect(
                         pad / 2,
                         y - font_scale as i32,
                         window_w.saturating_sub(pad as u32),
                         step as u32,
-                    ))?;
+                        SELECTED,
+                    )?;
                 }
                 let marker = if cheat.enabled { "[x]" } else { "[ ]" };
                 let number = format!("{:>2} ", index + 1);
@@ -288,13 +286,13 @@ impl Tool for Cheats {
                 let text_colour = if selected { TEXT } else { DIM_TEXT };
                 let marker_colour = if cheat.enabled { ENABLED } else { DIM_TEXT };
                 let mut cx = x;
-                font::draw_text(canvas, cx, y, font_scale, text_colour, &number)?;
+                font::draw_text(painter, cx, y, font_scale, text_colour, &number)?;
                 cx += font::text_width(&number, font_scale) as i32;
-                font::draw_text(canvas, cx, y, font_scale, marker_colour, marker)?;
+                font::draw_text(painter, cx, y, font_scale, marker_colour, marker)?;
                 cx += font::text_width(marker, font_scale) as i32;
                 let used = number.len() + marker.len();
                 font::draw_text(
-                    canvas,
+                    painter,
                     cx,
                     y,
                     font_scale,
@@ -311,7 +309,7 @@ impl Tool for Cheats {
         if let Some((prompt, text)) = self.entry_line() {
             let line = format!("{}{}_", prompt, text);
             font::draw_text(
-                canvas,
+                painter,
                 x,
                 y,
                 font_scale,
@@ -322,7 +320,14 @@ impl Tool for Cheats {
         y += step;
 
         if let Some(error) = &app.cheat_error {
-            font::draw_text(canvas, x, y, font_scale, ERROR, &tool::clip(error, columns))?;
+            font::draw_text(
+                painter,
+                x,
+                y,
+                font_scale,
+                ERROR,
+                &tool::clip(error, columns),
+            )?;
         }
         y += step;
 
@@ -331,7 +336,7 @@ impl Tool for Cheats {
             _ => "Enter confirms, Esc cancels",
         };
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -342,14 +347,9 @@ impl Tool for Cheats {
 }
 
 /// The character a key press types, as in the palette: printable ASCII
-/// key codes map to themselves, Shift is ignored.
-fn printable(key: Keycode) -> Option<char> {
-    let code = key as i32;
-    if (32..=126).contains(&code) && key != Keycode::Backquote {
-        char::from_u32(code as u32)
-    } else {
-        None
-    }
+/// `Key::printable`, Shift is ignored.
+fn printable(key: Key) -> Option<char> {
+    key.printable()
 }
 
 #[cfg(test)]
@@ -359,15 +359,15 @@ mod tests {
     #[test]
     fn edit_buffer_types_and_deletes() {
         let mut buffer = String::new();
-        assert!(!Cheats::edit_buffer(&mut buffer, Keycode::S));
-        assert!(!Cheats::edit_buffer(&mut buffer, Keycode::X));
-        assert!(!Cheats::edit_buffer(&mut buffer, Keycode::Space));
-        assert!(!Cheats::edit_buffer(&mut buffer, Keycode::Semicolon));
-        assert!(!Cheats::edit_buffer(&mut buffer, Keycode::F1));
+        assert!(!Cheats::edit_buffer(&mut buffer, Key::Char('s')));
+        assert!(!Cheats::edit_buffer(&mut buffer, Key::Char('x')));
+        assert!(!Cheats::edit_buffer(&mut buffer, Key::Char(' ')));
+        assert!(!Cheats::edit_buffer(&mut buffer, Key::Char(';')));
+        assert!(!Cheats::edit_buffer(&mut buffer, Key::F1));
         assert_eq!(buffer, "sx ;");
-        assert!(!Cheats::edit_buffer(&mut buffer, Keycode::Backspace));
+        assert!(!Cheats::edit_buffer(&mut buffer, Key::Backspace));
         assert_eq!(buffer, "sx ");
-        assert!(Cheats::edit_buffer(&mut buffer, Keycode::Return));
+        assert!(Cheats::edit_buffer(&mut buffer, Key::Return));
         assert_eq!(buffer, "sx ");
     }
 

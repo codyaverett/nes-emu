@@ -8,11 +8,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sdl2::keyboard::Keycode;
-use sdl2::render::WindowCanvas;
+use crate::ui::key::Key;
 
 use crate::ui::app::{App, STATE_SLOTS};
 use crate::ui::font;
+use crate::ui::painter::Painter;
 use crate::ui::tool::{self, Tool, ToolEvent};
 
 #[derive(Default)]
@@ -81,28 +81,27 @@ impl Tool for States {
         "Save states"
     }
 
-    fn handle_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent {
+    fn handle_key(&mut self, key: Key, app: &mut App) -> ToolEvent {
         let cursor = self.cursor(app);
         match key {
-            Keycode::Up => self.cursor = Some(if cursor <= 1 { STATE_SLOTS } else { cursor - 1 }),
-            Keycode::Down => self.cursor = Some(if cursor >= STATE_SLOTS { 1 } else { cursor + 1 }),
-            Keycode::Home => self.cursor = Some(1),
-            Keycode::End => self.cursor = Some(STATE_SLOTS),
-            Keycode::Return => app.load_state_from(cursor),
-            Keycode::S => app.save_state_to(cursor),
-            Keycode::Q => return ToolEvent::Close,
+            Key::Up => self.cursor = Some(if cursor <= 1 { STATE_SLOTS } else { cursor - 1 }),
+            Key::Down => self.cursor = Some(if cursor >= STATE_SLOTS { 1 } else { cursor + 1 }),
+            Key::Home => self.cursor = Some(1),
+            Key::End => self.cursor = Some(STATE_SLOTS),
+            Key::Return => app.load_state_from(cursor),
+            Key::Char('s') => app.save_state_to(cursor),
+            Key::Char('q') => return ToolEvent::Close,
             _ => {
                 // Digits jump straight to a slot.
-                let code = key as i32;
-                if (b'1' as i32..=b'9' as i32).contains(&code) {
-                    self.cursor = Some((code - b'0' as i32) as u8);
+                if let Some(d) = key.digit().filter(|d| (1..=STATE_SLOTS).contains(d)) {
+                    self.cursor = Some(d);
                 }
             }
         }
         ToolEvent::Continue
     }
 
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String> {
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String> {
         let x = tool::padding(font_scale);
         let mut y = tool::body_top(font_scale);
         let step = tool::line_step(font_scale);
@@ -113,7 +112,7 @@ impl Tool for States {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -122,7 +121,7 @@ impl Tool for States {
         )?;
         y += step;
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -140,12 +139,12 @@ impl Tool for States {
             } else {
                 tool::DIM_TEXT
             };
-            font::draw_text(canvas, x, y, font_scale, colour, &row)?;
+            font::draw_text(painter, x, y, font_scale, colour, &row)?;
             y += step;
         }
         y += step;
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -154,7 +153,7 @@ impl Tool for States {
         )?;
         y += step;
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,

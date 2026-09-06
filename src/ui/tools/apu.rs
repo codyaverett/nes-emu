@@ -5,22 +5,22 @@
 //! `mute pulse1` .. `mute dmc` and `unmute all` change the same state
 //! this page shows.
 
-use sdl2::keyboard::Keycode;
-use sdl2::render::WindowCanvas;
+use crate::ui::key::Key;
 
 use nes_emu::apu::{CHANNEL_COUNT, CHANNEL_NAMES};
 
 use crate::ui::app::App;
 use crate::ui::font;
+use crate::ui::painter::Painter;
 use crate::ui::tool::{self, Tool, ToolEvent};
 
 pub struct ApuView;
 
 /// Channel index for a digit key 1-5, if `key` is one.
-fn channel_for_key(key: Keycode) -> Option<usize> {
-    let code = key as i32;
-    let ch = (code - b'1' as i32) as usize;
-    ((b'1' as i32..b'1' as i32 + CHANNEL_COUNT as i32).contains(&code)).then_some(ch)
+fn channel_for_key(key: Key) -> Option<usize> {
+    key.digit()
+        .filter(|d| (1..=CHANNEL_COUNT as u8).contains(d))
+        .map(|d| d as usize - 1)
 }
 
 impl Tool for ApuView {
@@ -28,25 +28,25 @@ impl Tool for ApuView {
         "APU"
     }
 
-    fn handle_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent {
+    fn handle_key(&mut self, key: Key, app: &mut App) -> ToolEvent {
         if let Some(ch) = channel_for_key(key) {
             app.toggle_channel_mute(ch);
         } else {
             match key {
-                Keycode::U => app.unmute_all(),
-                Keycode::Q => return ToolEvent::Close,
+                Key::Char('u') => app.unmute_all(),
+                Key::Char('q') => return ToolEvent::Close,
                 _ => {}
             }
         }
         ToolEvent::Continue
     }
 
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String> {
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String> {
         let x = tool::padding(font_scale);
         let mut y = tool::body_top(font_scale);
         let step = tool::line_step(font_scale);
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -62,7 +62,7 @@ impl Tool for ApuView {
                 ("playing", tool::TEXT)
             };
             let line = format!("{name:<14} {state:<9} {}", ch + 1);
-            font::draw_text(canvas, x, y, font_scale, colour, &line)?;
+            font::draw_text(painter, x, y, font_scale, colour, &line)?;
             y += step;
         }
         y += step;
@@ -71,10 +71,10 @@ impl Tool for ApuView {
         } else {
             "Master: on"
         };
-        font::draw_text(canvas, x, y, font_scale, tool::TEXT, master)?;
+        font::draw_text(painter, x, y, font_scale, tool::TEXT, master)?;
         y += step;
         font::draw_text(
-            canvas,
+            painter,
             x,
             y,
             font_scale,
@@ -90,10 +90,10 @@ mod tests {
 
     #[test]
     fn digit_keys_map_to_channels() {
-        assert_eq!(channel_for_key(Keycode::Num1), Some(0));
-        assert_eq!(channel_for_key(Keycode::Num5), Some(4));
-        assert_eq!(channel_for_key(Keycode::Num6), None);
-        assert_eq!(channel_for_key(Keycode::Num0), None);
-        assert_eq!(channel_for_key(Keycode::U), None);
+        assert_eq!(channel_for_key(Key::Char('1')), Some(0));
+        assert_eq!(channel_for_key(Key::Char('5')), Some(4));
+        assert_eq!(channel_for_key(Key::Char('6')), None);
+        assert_eq!(channel_for_key(Key::Char('0')), None);
+        assert_eq!(channel_for_key(Key::Char('u')), None);
     }
 }

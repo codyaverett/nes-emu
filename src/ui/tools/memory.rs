@@ -9,11 +9,11 @@
 
 use std::cell::Cell;
 
-use sdl2::keyboard::Keycode;
-use sdl2::render::WindowCanvas;
+use crate::ui::key::Key;
 
 use crate::ui::app::App;
 use crate::ui::font;
+use crate::ui::painter::Painter;
 use crate::ui::tool::{self, Tool, ToolEvent};
 
 /// Bytes per row.
@@ -66,26 +66,26 @@ impl Tool for Memory {
         "Memory"
     }
 
-    fn handle_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent {
+    fn handle_key(&mut self, key: Key, app: &mut App) -> ToolEvent {
         let rows = self.rows.get().max(1);
         let page = rows.saturating_mul(ROW_BYTES);
         let limit = last_page_start(rows);
         let addr = app.memory_addr;
         app.memory_addr = match key {
-            Keycode::Up => addr.saturating_sub(ROW_BYTES),
-            Keycode::Down => addr.saturating_add(ROW_BYTES).min(limit),
-            Keycode::PageUp => addr.saturating_sub(page),
-            Keycode::PageDown => addr.saturating_add(page).min(limit),
-            Keycode::Home => 0,
-            Keycode::End => limit,
-            Keycode::Q => return ToolEvent::Close,
+            Key::Up => addr.saturating_sub(ROW_BYTES),
+            Key::Down => addr.saturating_add(ROW_BYTES).min(limit),
+            Key::PageUp => addr.saturating_sub(page),
+            Key::PageDown => addr.saturating_add(page).min(limit),
+            Key::Home => 0,
+            Key::End => limit,
+            Key::Char('q') => return ToolEvent::Close,
             _ => addr,
         } & 0xFFF0;
         ToolEvent::Continue
     }
 
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String> {
-        let (_, h) = canvas.output_size()?;
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String> {
+        let (_, h) = painter.size();
         let dense = (font_scale / 2).max(1);
         let x = tool::padding(font_scale);
         let mut y = tool::body_top(font_scale);
@@ -100,7 +100,7 @@ impl Tool for Memory {
         let first = app.memory_addr.min(last_page_start(rows)) & 0xFFF0;
         let last = (first as u32 + rows as u32 * ROW_BYTES as u32 - 1).min(0xFFFF) as u16;
         let header = format!("{first:04X}-{last:04X}  Up/Down PgUp/PgDn Home/End");
-        font::draw_text(canvas, x, y, font_scale, tool::ACCENT, &header)?;
+        font::draw_text(painter, x, y, font_scale, tool::ACCENT, &header)?;
         y = body_start;
 
         let mut buf = [0u8; ROW_BYTES as usize];
@@ -119,7 +119,7 @@ impl Tool for Memory {
                 tool::TEXT
             };
             let line = format_row(addr as u16, &buf);
-            font::draw_text(canvas, x, y, dense, colour, &line)?;
+            font::draw_text(painter, x, y, dense, colour, &line)?;
             y += step;
         }
         Ok(())

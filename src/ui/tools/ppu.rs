@@ -13,10 +13,7 @@
 //!   attribute bytes, using the background pattern table PPUCTRL selects.
 //! - Palettes: the 32 palette RAM entries as swatches with hex values.
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::WindowCanvas;
+use crate::ui::key::Key;
 
 use nes_emu::cartridge::Mirroring;
 use nes_emu::ppu::{PpuCtrl, NES_PALETTE};
@@ -24,6 +21,7 @@ use nes_emu::system::System;
 
 use crate::ui::app::App;
 use crate::ui::font;
+use crate::ui::painter::{Color, Painter};
 use crate::ui::tool::{self, Tool, ToolEvent};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -95,7 +93,7 @@ impl Image {
 
     /// Draw at (`x`, `y`) with each pixel `scale` window pixels square,
     /// merging horizontal runs of equal colour into one rectangle.
-    fn blit(&self, canvas: &mut WindowCanvas, x: i32, y: i32, scale: u32) -> Result<(), String> {
+    fn blit(&self, painter: &mut dyn Painter, x: i32, y: i32, scale: u32) -> Result<(), String> {
         for row in 0..self.height {
             let line = &self.pixels[row * self.width..(row + 1) * self.width];
             let mut start = 0;
@@ -105,13 +103,13 @@ impl Image {
                 while end < self.width && line[end] == colour {
                     end += 1;
                 }
-                canvas.set_draw_color(Color::RGB(colour.0, colour.1, colour.2));
-                canvas.fill_rect(Rect::new(
+                painter.fill_rect(
                     x + (start as u32 * scale) as i32,
                     y + (row as u32 * scale) as i32,
                     (end - start) as u32 * scale,
                     scale,
-                ))?;
+                    Color::rgb(colour.0, colour.1, colour.2),
+                )?;
                 start = end;
             }
         }
@@ -174,7 +172,7 @@ fn mirroring_name(m: Mirroring) -> &'static str {
 impl PpuView {
     fn draw_patterns(
         &self,
-        canvas: &mut WindowCanvas,
+        painter: &mut dyn Painter,
         font_scale: u32,
         app: &App,
         y: i32,
@@ -202,7 +200,7 @@ impl PpuView {
                 "8x8"
             },
         );
-        font::draw_text(canvas, x0, y, font_scale, tool::TEXT, &info)?;
+        font::draw_text(painter, x0, y, font_scale, tool::TEXT, &info)?;
         let y = y + step;
 
         let scale = 2;
@@ -212,7 +210,7 @@ impl PpuView {
         for table in 0..2u16 {
             let x = x0 + table as i32 * (128 * scale as i32 + gap);
             font::draw_text(
-                canvas,
+                painter,
                 x,
                 y,
                 font_scale,
@@ -229,14 +227,14 @@ impl PpuView {
                     }
                 }
             }
-            image.blit(canvas, x, y + step, scale)?;
+            image.blit(painter, x, y + step, scale)?;
         }
         Ok(())
     }
 
     fn draw_nametables(
         &self,
-        canvas: &mut WindowCanvas,
+        painter: &mut dyn Painter,
         font_scale: u32,
         app: &App,
         y: i32,
@@ -255,7 +253,7 @@ impl PpuView {
             mirroring_name(mirroring),
             bg_table * 0x1000
         );
-        font::draw_text(canvas, x0, y, font_scale, tool::TEXT, &info)?;
+        font::draw_text(painter, x0, y, font_scale, tool::TEXT, &info)?;
         let y = y + step;
 
         let scale = 2;
@@ -283,15 +281,15 @@ impl PpuView {
             let gx = x0 + (table % 2) as i32 * (128 * scale as i32 + gap);
             let gy = y + (table / 2) as i32 * (120 * scale as i32 + gap + step);
             let label = format!("${:04X} -> {}", 0x2000 + table * 0x400, physical);
-            font::draw_text(canvas, gx, gy, font_scale, tool::DIM_TEXT, &label)?;
-            image.blit(canvas, gx, gy + step, scale)?;
+            font::draw_text(painter, gx, gy, font_scale, tool::DIM_TEXT, &label)?;
+            image.blit(painter, gx, gy + step, scale)?;
         }
         Ok(())
     }
 
     fn draw_palettes(
         &self,
-        canvas: &mut WindowCanvas,
+        painter: &mut dyn Painter,
         font_scale: u32,
         app: &App,
         y: i32,
@@ -302,7 +300,7 @@ impl PpuView {
         let swatch = 2 * glyph;
         let row_h = swatch + glyph;
         font::draw_text(
-            canvas,
+            painter,
             x0,
             y,
             font_scale,
@@ -317,23 +315,22 @@ impl PpuView {
                 format!("SP{}", group - 4)
             };
             let text_y = y + (swatch - glyph) / 2;
-            font::draw_text(canvas, x0, text_y, font_scale, tool::ACCENT, &label)?;
+            font::draw_text(painter, x0, text_y, font_scale, tool::ACCENT, &label)?;
             for entry in 0..4u8 {
                 let index = group * 4 + entry;
                 let raw = system.ppu.palette[index as usize] & 0x3F;
                 let (r, g, b) = palette_colour(system, index);
                 let x = x0 + 5 * glyph + entry as i32 * (swatch + 4 * glyph);
-                canvas.set_draw_color(tool::DIM_TEXT);
-                canvas.fill_rect(Rect::new(
+                painter.fill_rect(
                     x - 1,
                     y - 1,
                     swatch as u32 + 2,
                     swatch as u32 + 2,
-                ))?;
-                canvas.set_draw_color(Color::RGB(r, g, b));
-                canvas.fill_rect(Rect::new(x, y, swatch as u32, swatch as u32))?;
+                    tool::DIM_TEXT,
+                )?;
+                painter.fill_rect(x, y, swatch as u32, swatch as u32, Color::rgb(r, g, b))?;
                 font::draw_text(
-                    canvas,
+                    painter,
                     x + swatch + glyph / 2,
                     text_y,
                     font_scale,
@@ -344,7 +341,7 @@ impl PpuView {
             y += row_h;
         }
         font::draw_text(
-            canvas,
+            painter,
             x0,
             y + glyph / 2,
             font_scale,
@@ -359,24 +356,23 @@ impl Tool for PpuView {
         "PPU"
     }
 
-    fn handle_key(&mut self, key: Keycode, _app: &mut App) -> ToolEvent {
+    fn handle_key(&mut self, key: Key, _app: &mut App) -> ToolEvent {
         match key {
-            Keycode::Right | Keycode::Tab => self.view = self.view.next(),
-            Keycode::Left => self.view = self.view.prev(),
-            Keycode::Up => self.palette = (self.palette + 1) % 8,
-            Keycode::Down => self.palette = (self.palette + 7) % 8,
-            Keycode::Q => return ToolEvent::Close,
+            Key::Right | Key::Tab => self.view = self.view.next(),
+            Key::Left => self.view = self.view.prev(),
+            Key::Up => self.palette = (self.palette + 1) % 8,
+            Key::Down => self.palette = (self.palette + 7) % 8,
+            Key::Char('q') => return ToolEvent::Close,
             _ => {
-                let code = key as i32;
-                if (b'0' as i32..=b'7' as i32).contains(&code) {
-                    self.palette = (code - b'0' as i32) as u8;
+                if let Some(d) = key.digit().filter(|d| *d <= 7) {
+                    self.palette = d;
                 }
             }
         }
         ToolEvent::Continue
     }
 
-    fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String> {
+    fn draw(&self, painter: &mut dyn Painter, font_scale: u32, app: &App) -> Result<(), String> {
         let x = tool::padding(font_scale);
         let y = tool::body_top(font_scale);
         let tabs: Vec<String> = View::ALL
@@ -391,12 +387,12 @@ impl Tool for PpuView {
             .collect();
         // 42 columns at most, inside the 44 the default window offers.
         let header = format!("{}  Left/Right", tabs.join(" "));
-        font::draw_text(canvas, x, y, font_scale, tool::ACCENT, &header)?;
+        font::draw_text(painter, x, y, font_scale, tool::ACCENT, &header)?;
         let y = y + tool::line_step(font_scale);
         match self.view {
-            View::Patterns => self.draw_patterns(canvas, font_scale, app, y),
-            View::Nametables => self.draw_nametables(canvas, font_scale, app, y),
-            View::Palettes => self.draw_palettes(canvas, font_scale, app, y),
+            View::Patterns => self.draw_patterns(painter, font_scale, app, y),
+            View::Nametables => self.draw_nametables(painter, font_scale, app, y),
+            View::Palettes => self.draw_palettes(painter, font_scale, app, y),
         }
     }
 }
