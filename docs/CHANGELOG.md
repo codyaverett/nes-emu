@@ -2,6 +2,31 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.14.0] - 2026-09-06
+
+Closes issues 51 and 53 (Phases 3 and 5 of docs/plans/WASM_WEB.md).
+
+### Added
+- Browser persistence: an IndexedDB store keyed by ROM CRC-32 holds
+  battery RAM (flushed every 5 s when changed and on page unload), nine
+  save-state slots stamped with time and core version, and the cheat
+  text. States, Cheats and Store panels under the canvas with F5/F8
+  save and load, F6/F7 slot select, cheat add, toggle and delete using
+  the same code syntax as the binary, and export or import of the whole
+  store as one JSON file.
+- The bundled cheats/ database is converted to web/cheats.json at build
+  time and seeds the cheat list (all codes off) the first time a known
+  ROM is loaded in the page.
+- GitHub Pages deployment on every version tag with a 500 KB wasm size
+  budget and debug-info check (npm run check-size, also run in CI). The
+  hosted page is https://codyaverett.github.io/nes-emu/ and goes live
+  with the first tag after this release; users supply their own ROMs.
+- Verified in headless Chromium: a Zelda battery save survives a page
+  reload, a state round-trips bit-exact, cheats added in the page take
+  effect and persist, export then import reproduces the store.
+
+---
+
 ## [0.13.0] - 2026-09-06
 
 Closes issues 49 and 50 (Phases 1 and 2 of docs/plans/WASM_WEB.md).

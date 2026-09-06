@@ -1,7 +1,7 @@
 {
   "name": "nes-emu-web",
   "private": true,
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Browser front end for nes-emu (docs/plans/WASM_WEB.md)",
   "type": "module",
   "scripts": {
