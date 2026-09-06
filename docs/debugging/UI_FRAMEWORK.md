@@ -352,6 +352,17 @@ two page screenshots; the file afterwards reads `075A:02<TAB>1<TAB>lives`.
 | Right Shift | Select |
 | Return | Start |
 | Arrows | D-pad |
+| Apostrophe / Semicolon | Player 2 A / B |
+| Period / Comma | Player 2 Start / Select |
+| I / J / K / L | Player 2 D-pad (Up / Left / Down / Right) |
+
+Player 2 keys (issue #42) collide with no hotkey in `main::key_down`
+(Escape, F1, R, P, N, M, Plus, Minus, F5-F8) nor with the backquote.
+The page-local keys (Q, A/E/D on Cheats, 1-5 view toggles) and palette
+typing only run in `Tool` and `Palette` mode, where the UI consumes the
+press before the controller map is consulted, so typing `l` or `;` in
+the palette does not move player 2; releases still reach both
+controllers, by design.
 
 Inside the palette: type to filter, Backspace, Up/Down, Enter, Escape.
 Inside Help: Up/Down/PageUp/PageDown/Home scroll; Escape, Q or Return

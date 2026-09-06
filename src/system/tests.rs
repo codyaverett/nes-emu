@@ -480,6 +480,67 @@ fn dmc_dma_halting_a_4016_read_clocks_the_controller_twice() {
 }
 
 #[test]
+fn dmc_dma_halting_a_4017_read_clocks_controller_2_twice() {
+    // Same as the $4016 case for the second port: LDA $4017 halted by a
+    // load DMA sees the second shifted bit of controller 2.
+    let mut system = system_with_rom(|prg| {
+        prg[0] = 0xAD;
+        prg[1] = 0x17;
+        prg[2] = 0x40;
+    });
+    system.controller2.press(ControllerButton::B);
+    system.write_byte(0x4016, 0x01);
+    system.write_byte(0x4016, 0x00);
+    program_dmc(&mut system, 0x00);
+    if System::is_get_cycle(system.total_cycles + 1 + 3) {
+        system.tick();
+    }
+    system.write_byte(0x4015, 0x10);
+
+    let cycles = system.cpu_step();
+    assert_eq!(cycles, 4 + 3, "load DMA stalls the $4017 read by 3 cycles");
+    assert_eq!(system.cpu_a & 1, 1, "CPU read the second shifted bit (B)");
+    assert_eq!(
+        system.read_byte(0x4017) & 1,
+        0,
+        "the next read is the third bit (Select)"
+    );
+}
+
+#[test]
+fn both_controller_ports_shift_out_their_own_buttons_after_a_strobe() {
+    // Disjoint button sets so every bit position tells the ports apart.
+    let mut system = system();
+    for b in [
+        ControllerButton::A,
+        ControllerButton::SELECT,
+        ControllerButton::UP,
+        ControllerButton::LEFT,
+    ] {
+        system.controller1.press(b);
+    }
+    for b in [
+        ControllerButton::B,
+        ControllerButton::START,
+        ControllerButton::DOWN,
+        ControllerButton::RIGHT,
+    ] {
+        system.controller2.press(b);
+    }
+    // One $4016 write strobes both ports.
+    system.write_byte(0x4016, 0x01);
+    system.write_byte(0x4016, 0x00);
+    let port1: Vec<u8> = (0..8).map(|_| system.read_byte(0x4016) & 1).collect();
+    let port2: Vec<u8> = (0..8).map(|_| system.read_byte(0x4017) & 1).collect();
+    // Order: A, B, Select, Start, Up, Down, Left, Right.
+    assert_eq!(port1, [1, 0, 1, 0, 1, 0, 1, 0], "controller 1 sequence");
+    assert_eq!(port2, [0, 1, 0, 1, 0, 1, 0, 1], "controller 2 sequence");
+    // Both ports are exhausted independently: open bus reads as 1.
+    assert_eq!(system.read_byte(0x4016) & 1, 1);
+    assert_eq!(system.read_byte(0x4017) & 1, 1);
+}
+
+#[test]
 fn reload_dma_stalls_four_cycles_and_can_halt_on_a_padded_cycle() {
     // A stream of NOPs: two cycles each, the second one padded (a dummy
     // read of the next opcode on hardware). 17-byte sample so several

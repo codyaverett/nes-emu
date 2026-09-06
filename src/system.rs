@@ -539,8 +539,9 @@ impl System {
                 value
             }
             0x4017 => {
-                // Controller 2 not connected, return 0
-                0x00
+                let value = self.controller2.read();
+                log::trace!("CPU reading $4017: value={:02X}", value);
+                value
             }
             0x4020..=0xFFFF => match self.cartridge {
                 Some(ref mut cart) => {
@@ -591,8 +592,9 @@ impl System {
             }
             0x4016 => {
                 log::trace!("CPU writing $4016: value={:02X}", value);
+                // One strobe line feeds both ports.
                 self.controller1.write(value);
-                // Controller 2 strobe is handled but we don't have a second controller
+                self.controller2.write(value);
             }
             0x4017 => self.apu.write_register(addr, value),
             0x4020..=0xFFFF => {

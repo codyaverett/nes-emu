@@ -70,17 +70,46 @@ impl AudioCallback for ApuAudioCallback {
     }
 }
 
-fn map_keycode_to_button(key: Keycode) -> Option<ControllerButton> {
+/// Which controller port a key belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Player {
+    One,
+    Two,
+}
+
+/// Default key map for both controllers (README "Controls"). Player 2 uses
+/// I/J/K/L for the D-pad, apostrophe/semicolon for A/B and period/comma for
+/// Start/Select; none of these are hotkeys in `key_down`, and page-local
+/// keys and palette typing only run while the UI owns the keyboard.
+fn map_keycode_to_button(key: Keycode) -> Option<(Player, ControllerButton)> {
+    use ControllerButton as B;
+    use Player::{One, Two};
     match key {
-        Keycode::Z => Some(ControllerButton::A),
-        Keycode::X => Some(ControllerButton::B),
-        Keycode::RShift => Some(ControllerButton::SELECT),
-        Keycode::Return => Some(ControllerButton::START),
-        Keycode::Up => Some(ControllerButton::UP),
-        Keycode::Down => Some(ControllerButton::DOWN),
-        Keycode::Left => Some(ControllerButton::LEFT),
-        Keycode::Right => Some(ControllerButton::RIGHT),
+        Keycode::Z => Some((One, B::A)),
+        Keycode::X => Some((One, B::B)),
+        Keycode::RShift => Some((One, B::SELECT)),
+        Keycode::Return => Some((One, B::START)),
+        Keycode::Up => Some((One, B::UP)),
+        Keycode::Down => Some((One, B::DOWN)),
+        Keycode::Left => Some((One, B::LEFT)),
+        Keycode::Right => Some((One, B::RIGHT)),
+        Keycode::Quote => Some((Two, B::A)),
+        Keycode::Semicolon => Some((Two, B::B)),
+        Keycode::Comma => Some((Two, B::SELECT)),
+        Keycode::Period => Some((Two, B::START)),
+        Keycode::I => Some((Two, B::UP)),
+        Keycode::K => Some((Two, B::DOWN)),
+        Keycode::J => Some((Two, B::LEFT)),
+        Keycode::L => Some((Two, B::RIGHT)),
         _ => None,
+    }
+}
+
+/// The controller a mapped key drives.
+fn controller_for(app: &mut App, player: Player) -> &mut nes_emu::input::Controller {
+    match player {
+        Player::One => &mut app.system.controller1,
+        Player::Two => &mut app.system.controller2,
     }
 }
 
@@ -206,8 +235,8 @@ fn key_down(key: Keycode, app: &mut App, ui: &mut Ui) {
         Keycode::F8 => app.load_state(),
         _ => {}
     }
-    if let Some(button) = map_keycode_to_button(key) {
-        app.system.controller1.press(button);
+    if let Some((player, button)) = map_keycode_to_button(key) {
+        controller_for(app, player).press(button);
     }
 }
 
@@ -230,8 +259,8 @@ fn draw_message(canvas: &mut WindowCanvas, font_scale: u32, text: &str) -> Resul
 /// Releases reach the controller in every UI mode so a button held when
 /// the palette opened does not stick.
 fn key_up(key: Keycode, app: &mut App) {
-    if let Some(button) = map_keycode_to_button(key) {
-        app.system.controller1.release(button);
+    if let Some((player, button)) = map_keycode_to_button(key) {
+        controller_for(app, player).release(button);
     }
 }
 

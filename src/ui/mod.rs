@@ -44,6 +44,9 @@ pub const KEY_BINDINGS: &[(&str, &str)] = &[
     ("Right Shift", "Select"),
     ("Return", "Start"),
     ("Arrows", "D-pad"),
+    ("Quote / ;", "P2 A / B"),
+    ("Period / ,", "P2 Start / Select"),
+    ("I/J/K/L", "P2 D-pad"),
     ("In pages", "Left/Right views, 1-5 toggles"),
 ];
 

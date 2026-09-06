@@ -64,6 +64,7 @@ Or use the provided test scripts:
 - **X**: B button  
 - **Enter**: Start
 - **Right Shift**: Select
+- Player 2: **I** / **J** / **K** / **L**: D-pad (Up / Left / Down / Right), **Apostrophe**: A, **Semicolon**: B, **Period**: Start, **Comma**: Select
 - **Backquote**: Open the command palette (type to filter, Enter runs, Escape closes)
 - **F1**: Help page with every key and command
 - **P** / **N**: Pause or resume / frame advance
