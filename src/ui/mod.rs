@@ -40,6 +40,7 @@ pub const KEY_BINDINGS: &[(&str, &str)] = &[
     ("Plus / Minus", "Volume up / down"),
     ("F5 / F8", "Save / load state (slot)"),
     ("F6 / F7", "Previous / next state slot"),
+    ("Backspace", "Hold to rewind (2x back)"),
     ("Z / X", "A / B"),
     ("Right Shift", "Select"),
     ("Return", "Start"),

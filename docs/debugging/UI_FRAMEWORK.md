@@ -5,7 +5,7 @@
 **Status:** Complete; feel of the palette and key conflicts need a human
 **Tracking:** GitHub issue #30 (phase 1 of `docs/plans/TOOLS_AND_CHEATS.md`);
 argument commands and the Cheats page are issue #32 (phase 3); issue #33
-added the Memory, PPU and APU pages
+added the Memory, PPU and APU pages; issue #44 added rewind
 
 ## Executive Summary
 
@@ -58,10 +58,13 @@ the emulator.
 `App` (`src/ui/app.rs`) owns the `System`, the audio queue and the
 mute/volume handles the audio callback reads, plus `paused`,
 `frame_advance`, `crop_enabled`, `crop_dirty`, `quit_requested`,
-`osd_until`, `save_path` and the command registry. Commands and tools
-mutate it through methods (`pause`, `resume`, `request_frame_advance`,
-`reset`, `toggle_mute`, `volume_up`, `volume_down`, `toggle_crop`,
-`quit`). The frame loop reads the flags: it skips emulation while paused
+`osd_until`, `save_path`, the command registry and the rewind ring
+buffer (`rewind_buffer`, `rewind_recording`, `rewinding`; see Rewind
+below). Commands and tools mutate it through methods (`pause`, `resume`,
+`request_frame_advance`, `reset`, `toggle_mute`, `volume_up`,
+`volume_down`, `toggle_crop`, `quit`, `rewind_command`). The frame loop
+reads the flags: it loads one snapshot per frame while `rewinding`,
+skips emulation while paused
 (running exactly one frame when `frame_advance` is set), resizes the
 window and recreates `src_rect` when `crop_dirty` is set, and leaves the
 loop when `quit_requested` is set so the battery flush on exit still
@@ -334,6 +337,129 @@ printf 'SXIOPO\t1\tInfinite lives\n' > smb.cht
 The second run also runs `cheat toggle 2` from the palette between the
 two page screenshots; the file afterwards reads `075A:02<TAB>1<TAB>lives`.
 
+## Rewind (issue 44)
+
+Save states (`docs/debugging/SAVE_STATES.md`) make rewind cheap: the
+`App` keeps a ring buffer of state images and, while Backspace is held,
+loads them newest first.
+
+### Recording
+
+`App::record_rewind_frame` runs after every emulated frame (the normal
+audio-clocked loop, the no-audio loop and a frame advance; never after
+the frame `rewind_step` runs to refresh the picture). Every
+`REWIND_INTERVAL_FRAMES` (2) it pushes `System::save_state()` onto
+`rewind_buffer: VecDeque<Vec<u8>>` and drops the oldest entry past
+`REWIND_MAX_ENTRIES` (600): 20 seconds at 60 Hz. Both are constants in
+`src/ui/app.rs`.
+
+Measured cost (release build, Super Mario Bros., first snapshot, logged
+once at info level as `Rewind snapshot: ...`): 15098 bytes in 20-37 us
+on an Apple Silicon Mac. One snapshot every two frames is under 0.2% of
+a frame, so the interval could be 1 with no visible cost; 2 was kept
+because it halves the memory (9.1 MB at the cap) and makes the held key
+run backwards at twice game speed, which reads as "rewind" rather than
+"reverse". Change `REWIND_INTERVAL_FRAMES` to 1 for frame-exact rewind
+at 1x.
+
+### Holding Backspace
+
+`main::key_down` routes Backspace in `Game` mode to `App::rewind_start`,
+which sets `rewinding`; `key_up` calls `rewind_stop` from any mode
+(harmless when the press went to the palette, where Backspace deletes
+text, or to a page). SDL repeats key-down events while a key is held,
+so `rewind_start` is idempotent.
+
+While `rewinding` the main loop, before the paused and normal branches:
+
+1. clears the audio queue, so the device callback keeps repeating its
+   last sample (silence) instead of playing audio that belongs to
+   frames the game is leaving;
+2. calls `App::rewind_step`, which pops the newest image, loads it with
+   `System::load_state` and runs one frame with `System::run_frame`
+   (no audio) so the frame buffer, which is not part of the image,
+   shows the restored state;
+3. sets `osd_text` directly to `Rewinding  N.N s` with the seconds still
+   in the buffer (`show_message` would log every frame);
+4. sleeps to the fixed frame duration instead of the audio-paced 1 ms,
+   so rewind speed does not follow the display refresh.
+
+Nothing is emulated and nothing is recorded while the key is held. With
+an empty buffer the picture freezes on the oldest snapshot and the OSD
+reads `0.0 s`. On release, `rewind_stop` clears the flag; the next loop
+iteration emulates from the state last loaded, the audio queue refills
+naturally (the loop runs up to four frames per present until
+`AUDIO_TARGET_SAMPLES` are queued, as after any stall) and the buffer
+holds only images older than the resume point. The interval counter is
+reset on release so the first new snapshot is a full interval after it.
+
+Each held frame goes back one image, that is two frames, then renders
+one frame forward from it, so the visible sequence steps back two
+frames per presented frame. The first held frame can show the same or
+the next frame when a snapshot was taken just before the press; that is
+a single frame and not compensated for.
+
+`reset`, `load state` and `rewind off` all change the timeline. Only
+`rewind off` clears the buffer; after a reset or a slot load the older
+images stay, so Backspace undoes the load or the reset. That is
+deliberate: the buffer is the last 20 seconds of what was on screen.
+
+![Rewinding](../testing/test_output/ui/rewind.png)
+
+### Commands
+
+`rewind` takes one argument (`App::rewind_command`):
+
+| Input | Action |
+| --- | --- |
+| `rewind N` | Jump back N seconds at once: pops the images covering that span (or all of them) and loads the last; `Rewound 2.0 s (1.6 s left)` on the OSD |
+| `rewind on` | Start recording (the default) |
+| `rewind off` | Stop recording and clear the buffer, freeing the memory |
+| `rewind` | Show the recording state on the OSD |
+
+The Help page shows the same state line under the key bindings
+(`Rewind: on, 1.8 s buffered (55 snapshots)` or `Rewind: off (rewind on
+to record)`), read live from the `App`.
+
+![After rewind 2](../testing/test_output/ui/rewind-command.png)
+![Help page with the rewind state](../testing/test_output/ui/help-rewind.png)
+
+### Verification
+
+Scripted binary, release build (`--ui-script` cannot hold a key on its
+own, so the `KEY*N` syntax below was added): 250 empty entries record
+five seconds of the title screen, `Backspace*40` rewinds for 40
+presented frames (the log reads `Rewinding (4.7 s available)` then
+`Rewind stopped (3.4 s left)`: 40 images, 1.3 s, consumed), `rewind 2`
+from the palette (`Rewound 2.0 s (1.6 s left)`), then the Help page.
+
+```sh
+./target/release/nes-emu smb.nes --no-audio \
+  --ui-script "<250 empty entries>,Backspace*40,,,,,,backquote,r,e,w,i,n,d,Space,2,Return,,,,,,backquote,h,e,l,p,Return,,,,,,Escape,Escape" \
+  --screenshot rewind.ppm:305 --screenshot rewind-command.ppm:338 \
+  --screenshot help-rewind.ppm:348
+```
+
+A shorter script with audio enabled (`m` first so the device is muted,
+120 empties, `Backspace*60`, 120 empties, Escape) ran the
+drain-and-refill path to completion without a panic or a hang; the log
+showed 2.6 s available before the hold and 0.6 s left after it (60
+images, 2.0 s). A unit test in `src/main.rs` covers the `KEY*N` parser.
+
+The `INPT` section of the image restores the controller buttons, so a
+direction physically held through a rewind disagrees with the restored
+state until it is released and pressed again (hold Right and Backspace,
+release Backspace: Mario stands still until Right is re-pressed). The
+same applies to slot loads; see `docs/debugging/SAVE_STATES.md`.
+
+Needs a human: the feel of the rewind speed (2x back per held frame),
+whether the audio on release is a clean resume (the queue is empty at
+that point, so the first callback after release repeats the last
+pre-rewind sample until the loop has queued new ones, a few
+milliseconds at most), and whether the held-direction behaviour above
+is acceptable or the controller should be re-applied from the
+physically held keys on release.
+
 ## Key bindings
 
 | Key | Action |
@@ -348,6 +474,7 @@ two page screenshots; the file afterwards reads `075A:02<TAB>1<TAB>lives`.
 | Plus / Minus | Volume up / down |
 | F5 / F8 | Save / load the current save-state slot (docs/debugging/SAVE_STATES.md) |
 | F6 / F7 | Previous / next save-state slot |
+| Backspace (held) | Rewind, two frames back per presented frame (issue #44, see above) |
 | Z / X | A / B |
 | Right Shift | Select |
 | Return | Start |
@@ -379,7 +506,7 @@ Built-in commands: pause, resume, frame advance, reset, mute, volume up,
 volume down, toggle overscan crop, help, quit, cheats, cheat add CODE,
 cheat toggle N, cheat clear, mem [ADDR], ppu, apu, mute pulse1, mute
 pulse2, mute triangle, mute noise, mute dmc, unmute all, save state [N],
-load state [N], slot [N], states.
+load state [N], slot [N], states, rewind [N | on | off].
 
 ## Debug flags
 
@@ -401,6 +528,14 @@ frame 30, one entry per frame is pressed and released through the same
 with no key. This is in-process injection into the emulator's own event
 handling, not OS-level keystroke injection: it never types into another
 window.
+
+`KEY*N` holds a key: it is pressed on its frame, held for N frames in
+total, and released on the Nth (`Backspace*30` rewinds for half a
+second). The parser expands it into N per-frame entries with `down` and
+`up` flags (`main::ScriptKey`), so the injection loop stays one entry
+per frame; `KEY*1` is a plain tap. No key-repeat events are generated.
+The split is at the last asterisk, so the asterisk key itself cannot be
+scripted by name.
 
 The screenshots in `docs/testing/test_output/ui/` were made with:
 

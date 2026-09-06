@@ -36,6 +36,18 @@ const OSD_DURATION: Duration = Duration::from_secs(2);
 /// Samples queued for the SDL audio callback.
 pub type AudioQueue = Arc<Mutex<VecDeque<f32>>>;
 
+/// Rewind (docs/debugging/UI_FRAMEWORK.md, issue #44): a snapshot of the
+/// machine is taken every `REWIND_INTERVAL_FRAMES` emulated frames while
+/// recording is on. Holding Backspace loads them newest first, one per
+/// presented frame, so the game runs backwards at
+/// `REWIND_INTERVAL_FRAMES` times its normal speed.
+pub const REWIND_INTERVAL_FRAMES: u32 = 2;
+/// Snapshots kept: 600 at two frames each is 20 seconds at 60 Hz, about
+/// 9 MB at 15 KB per image.
+pub const REWIND_MAX_ENTRIES: usize = 600;
+/// NES frames per second, used to turn snapshot counts into seconds.
+const FRAMES_PER_SECOND: f32 = 60.0;
+
 pub struct App {
     pub system: System,
     /// `None` when audio is disabled; then the frame loop paces itself.
@@ -81,6 +93,19 @@ pub struct App {
     /// One-line message drawn over the game until the instant passes
     /// ("Saved slot 3"). Independent of the volume indicator.
     pub osd_text: Option<(String, Instant)>,
+    /// State images, oldest first, taken every `REWIND_INTERVAL_FRAMES`
+    /// while `rewind_recording` is on; capped at `REWIND_MAX_ENTRIES`.
+    pub rewind_buffer: VecDeque<Vec<u8>>,
+    /// Snapshots are taken while set; `rewind off` clears the buffer and
+    /// stops recording to save memory.
+    pub rewind_recording: bool,
+    /// Backspace is held: the main loop pops and loads one snapshot per
+    /// presented frame instead of emulating.
+    pub rewinding: bool,
+    /// Emulated frames since the last snapshot.
+    rewind_frame_counter: u32,
+    /// Set once the first snapshot has been timed and logged.
+    rewind_cost_logged: bool,
 }
 
 /// Number of save-state slots.
@@ -115,6 +140,11 @@ impl App {
             rom_path,
             slot: 1,
             osd_text: None,
+            rewind_buffer: VecDeque::with_capacity(REWIND_MAX_ENTRIES),
+            rewind_recording: true,
+            rewinding: false,
+            rewind_frame_counter: 0,
+            rewind_cost_logged: false,
         }
     }
 
@@ -276,6 +306,157 @@ impl App {
         match self.slot_argument(arg) {
             Some(slot) => self.set_slot(slot),
             None => self.show_message(format!("slot needs a number 1-{STATE_SLOTS}")),
+        }
+    }
+
+    // Rewind (docs/debugging/UI_FRAMEWORK.md, issue #44).
+
+    /// Call once per emulated frame (not for the frame `rewind_step` runs
+    /// to refresh the picture): every `REWIND_INTERVAL_FRAMES` a snapshot
+    /// is pushed and the oldest dropped past `REWIND_MAX_ENTRIES`. The
+    /// first snapshot's cost is logged at info level.
+    pub fn record_rewind_frame(&mut self) {
+        if !self.rewind_recording {
+            return;
+        }
+        self.rewind_frame_counter += 1;
+        if self.rewind_frame_counter < REWIND_INTERVAL_FRAMES {
+            return;
+        }
+        self.rewind_frame_counter = 0;
+        let started = Instant::now();
+        let image = self.system.save_state();
+        if !self.rewind_cost_logged {
+            self.rewind_cost_logged = true;
+            log::info!(
+                "Rewind snapshot: {} bytes in {:?} (every {} frames, {} kept, {:.1} MB max)",
+                image.len(),
+                started.elapsed(),
+                REWIND_INTERVAL_FRAMES,
+                REWIND_MAX_ENTRIES,
+                (image.len() * REWIND_MAX_ENTRIES) as f32 / 1e6
+            );
+        }
+        if self.rewind_buffer.len() >= REWIND_MAX_ENTRIES {
+            self.rewind_buffer.pop_front();
+        }
+        self.rewind_buffer.push_back(image);
+    }
+
+    /// Seconds of gameplay the buffer can rewind through.
+    pub fn rewind_seconds(&self) -> f32 {
+        (self.rewind_buffer.len() as u32 * REWIND_INTERVAL_FRAMES) as f32 / FRAMES_PER_SECOND
+    }
+
+    /// Backspace pressed in game mode. Idempotent: SDL repeats key-down
+    /// events while a key is held.
+    pub fn rewind_start(&mut self) {
+        if !self.rewinding {
+            log::info!("Rewinding ({:.1} s available)", self.rewind_seconds());
+        }
+        self.rewinding = true;
+    }
+
+    /// Backspace released: emulation resumes from the last loaded
+    /// snapshot; the buffer keeps only what is older than that point.
+    /// Harmless when no rewind was in progress (the palette ate the
+    /// press). The interval counter restarts so the next snapshot is a
+    /// full interval after the resume point.
+    pub fn rewind_stop(&mut self) {
+        if self.rewinding {
+            log::info!("Rewind stopped ({:.1} s left)", self.rewind_seconds());
+            self.rewind_frame_counter = 0;
+        }
+        self.rewinding = false;
+    }
+
+    /// Pop the newest snapshot and load it, then run one frame without
+    /// audio so the picture shows it (the frame buffer is not part of
+    /// the image). Returns false with the machine untouched when the
+    /// buffer is empty. Called by the main loop once per presented frame
+    /// while `rewinding`; the caller drains the audio queue and skips
+    /// normal emulation.
+    pub fn rewind_step(&mut self) -> bool {
+        let Some(image) = self.rewind_buffer.pop_back() else {
+            return false;
+        };
+        if let Err(e) = self.system.load_state(&image) {
+            // Every image came from this machine, so this cannot happen
+            // short of a bug; drop the buffer rather than loop on it.
+            log::warn!("Rewind snapshot rejected: {}; clearing buffer", e);
+            self.rewind_buffer.clear();
+            return false;
+        }
+        self.system.run_frame();
+        true
+    }
+
+    /// Jump back `seconds` at once: pops the snapshots covering that
+    /// span (or all of them) and loads the last one.
+    pub fn rewind_by_seconds(&mut self, seconds: f32) {
+        let per_snapshot = REWIND_INTERVAL_FRAMES as f32 / FRAMES_PER_SECOND;
+        let wanted = (seconds / per_snapshot).ceil().max(1.0) as usize;
+        let available = self.rewind_buffer.len();
+        if available == 0 {
+            self.show_message("Nothing to rewind");
+            return;
+        }
+        let count = wanted.min(available);
+        // Drop the intermediate images; the last one is loaded.
+        for _ in 1..count {
+            self.rewind_buffer.pop_back();
+        }
+        if self.rewind_step() {
+            self.rewind_frame_counter = 0;
+            let went = count as f32 * per_snapshot;
+            let left = self.rewind_seconds();
+            self.show_message(format!("Rewound {went:.1} s ({left:.1} s left)"));
+        }
+    }
+
+    /// Turn recording on or off; off clears the buffer to free memory.
+    pub fn set_rewind_recording(&mut self, on: bool) {
+        self.rewind_recording = on;
+        self.rewind_frame_counter = 0;
+        if on {
+            self.show_message("Rewind recording on");
+        } else {
+            self.rewind_buffer.clear();
+            self.show_message("Rewind recording off (buffer cleared)");
+        }
+    }
+
+    /// One line for the Help page and the bare `rewind` command. At
+    /// most 43 characters so it fits the 44-column page.
+    pub fn rewind_status(&self) -> String {
+        if self.rewind_recording {
+            format!(
+                "Rewind: on, {:.1} s buffered ({} snapshots)",
+                self.rewind_seconds(),
+                self.rewind_buffer.len()
+            )
+        } else {
+            "Rewind: off (rewind on to record)".to_string()
+        }
+    }
+
+    /// `rewind N` (seconds back), `rewind on`, `rewind off`; a bare
+    /// `rewind` shows the recording state.
+    pub fn rewind_command(&mut self, arg: &str) {
+        let arg = arg.trim();
+        match arg.to_ascii_lowercase().as_str() {
+            "" => {
+                let status = self.rewind_status();
+                self.show_message(status);
+            }
+            "on" => self.set_rewind_recording(true),
+            "off" => self.set_rewind_recording(false),
+            _ => match arg.parse::<f32>() {
+                Ok(seconds) if seconds > 0.0 && seconds.is_finite() => {
+                    self.rewind_by_seconds(seconds)
+                }
+                _ => self.show_message("rewind needs seconds, on or off"),
+            },
         }
     }
 

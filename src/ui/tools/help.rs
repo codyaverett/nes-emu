@@ -27,6 +27,9 @@ impl Help {
             out.push(Line(format!("{key:<13} {what}"), tool::TEXT));
         }
         out.push(Line(String::new(), tool::TEXT));
+        // Recording state, live (issue #44): `rewind on` / `rewind off`.
+        out.push(Line(app.rewind_status(), tool::DIM_TEXT));
+        out.push(Line(String::new(), tool::TEXT));
         out.push(Line(
             "Commands (backquote, type to filter, Enter)".into(),
             tool::ACCENT,

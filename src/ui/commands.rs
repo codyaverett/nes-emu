@@ -111,6 +111,8 @@ pub fn builtin_commands() -> Vec<Command> {
         Command::run_arg("load state", "Load from slot N", App::load_state_command),
         Command::run_arg("slot", "Pick state slot 1-9", App::slot_command),
         Command::tool("states", "Save state slots page", ToolId::States),
+        // Rewind (docs/debugging/UI_FRAMEWORK.md, issue #44).
+        Command::run_arg("rewind", "N secs back; on/off", App::rewind_command),
     ]
 }
 

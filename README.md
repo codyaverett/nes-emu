@@ -72,6 +72,7 @@ Or use the provided test scripts:
 - **R**: Reset emulator
 - **F5** / **F8**: Save / load the current save-state slot (`<rom>.s1` .. `.s9`)
 - **F6** / **F7**: Previous / next save-state slot; the `states` palette command lists them
+- **Backspace** (hold): Rewind through the last 20 seconds, two frames back per frame; release to play on from there. Palette: `rewind N` jumps back N seconds, `rewind off` / `rewind on` stops or restarts recording
 - **Escape**: Close the palette or tool page; in the game, exit
 
 ## Supported Mappers

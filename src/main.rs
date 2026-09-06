@@ -122,7 +122,17 @@ struct Options {
     screenshots: Vec<(PathBuf, u64)>,
     /// Keys injected one per frame from `UI_SCRIPT_START_FRAME` on;
     /// `None` leaves that frame without input.
-    ui_script: Vec<Option<Keycode>>,
+    ui_script: Vec<Option<ScriptKey>>,
+}
+
+/// One frame of `--ui-script` input: which key, and whether this frame
+/// presses and/or releases it. A tapped key does both; `Key*N` presses
+/// on its first frame, holds, and releases on frame N.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScriptKey {
+    key: Keycode,
+    down: bool,
+    up: bool,
 }
 
 fn usage(program: &str) -> ! {
@@ -140,6 +150,8 @@ fn usage(program: &str) -> ! {
     eprintln!(
         "--ui-script KEYS injects comma-separated SDL key names, one per frame from frame 30."
     );
+    eprintln!("  KEY*N holds KEY for N frames (Backspace*30 rewinds for half a second).");
+    eprintln!("Hold Backspace to rewind; the rewind palette command jumps back N seconds.");
     std::process::exit(1);
 }
 
@@ -193,25 +205,46 @@ fn parse_screenshot_spec(spec: &str) -> Result<(PathBuf, u64)> {
 }
 
 /// Comma-separated SDL key names (`Keycode::from_name`), with a few
-/// friendlier aliases. An empty entry is a frame with no key.
-fn parse_ui_script(spec: &str) -> Result<Vec<Option<Keycode>>> {
-    spec.split(',')
-        .map(|name| {
-            let name = name.trim();
-            if name.is_empty() {
-                return Ok(None);
+/// friendlier aliases. An empty entry is a frame with no key. `KEY*N`
+/// expands to N frames: pressed on the first, held, released on the
+/// last, so hold-to-act keys (Backspace rewinds) can be scripted.
+fn parse_ui_script(spec: &str) -> Result<Vec<Option<ScriptKey>>> {
+    let mut out = Vec::new();
+    for entry in spec.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            out.push(None);
+            continue;
+        }
+        let (name, frames) = match entry.rsplit_once('*') {
+            Some((name, count)) => {
+                let frames: usize = count
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .with_context(|| format!("bad hold count in --ui-script {:?}", entry))?;
+                (name.trim(), frames)
             }
-            let canonical = match name.to_ascii_lowercase().as_str() {
-                "backquote" | "grave" => "`",
-                "enter" => "Return",
-                "esc" => "Escape",
-                _ => name,
-            };
-            Keycode::from_name(canonical)
-                .map(Some)
-                .with_context(|| format!("unknown key name {:?} in --ui-script", name))
-        })
-        .collect()
+            None => (entry, 1),
+        };
+        let canonical = match name.to_ascii_lowercase().as_str() {
+            "backquote" | "grave" => "`",
+            "enter" => "Return",
+            "esc" => "Escape",
+            _ => name,
+        };
+        let key = Keycode::from_name(canonical)
+            .with_context(|| format!("unknown key name {:?} in --ui-script", name))?;
+        for i in 0..frames {
+            out.push(Some(ScriptKey {
+                key,
+                down: i == 0,
+                up: i + 1 == frames,
+            }));
+        }
+    }
+    Ok(out)
 }
 
 /// Key press routing: the UI first, then hotkeys, then the controller.
@@ -233,6 +266,9 @@ fn key_down(key: Keycode, app: &mut App, ui: &mut Ui) {
         Keycode::F6 => app.prev_slot(),
         Keycode::F7 => app.next_slot(),
         Keycode::F8 => app.load_state(),
+        // Rewind while held (docs/debugging/UI_FRAMEWORK.md, issue #44);
+        // the release below ends it.
+        Keycode::Backspace => app.rewind_start(),
         _ => {}
     }
     if let Some((player, button)) = map_keycode_to_button(key) {
@@ -259,6 +295,10 @@ fn draw_message(canvas: &mut WindowCanvas, font_scale: u32, text: &str) -> Resul
 /// Releases reach the controller in every UI mode so a button held when
 /// the palette opened does not stick.
 fn key_up(key: Keycode, app: &mut App) {
+    if key == Keycode::Backspace {
+        // A no-op when the press went to the palette or a page.
+        app.rewind_stop();
+    }
     if let Some((player, button)) = map_keycode_to_button(key) {
         controller_for(app, player).release(button);
     }
@@ -483,7 +523,7 @@ fn main() -> Result<()> {
     let mut last_battery_flush = Instant::now();
     let frame_duration = Duration::from_nanos(16_666_667);
     let mut presented: u64 = 0;
-    let mut script: VecDeque<Option<Keycode>> = options.ui_script.iter().copied().collect();
+    let mut script: VecDeque<Option<ScriptKey>> = options.ui_script.iter().copied().collect();
     let mut screenshots = options.screenshots.clone();
 
     log::info!("Starting emulation...");
@@ -506,12 +546,17 @@ fn main() -> Result<()> {
             }
         }
 
-        // Scripted input: one key per frame, pressed and released.
+        // Scripted input: one key per frame, pressed and released, or
+        // held across frames for a `KEY*N` entry.
         if presented >= UI_SCRIPT_START_FRAME {
-            if let Some(Some(key)) = script.pop_front() {
-                log::info!("ui-script: {}", key);
-                key_down(key, &mut app, &mut ui);
-                key_up(key, &mut app);
+            if let Some(Some(entry)) = script.pop_front() {
+                if entry.down {
+                    log::info!("ui-script: {}", entry.key);
+                    key_down(entry.key, &mut app, &mut ui);
+                }
+                if entry.up {
+                    key_up(entry.key, &mut app);
+                }
             }
         }
 
@@ -535,12 +580,25 @@ fn main() -> Result<()> {
         // 44.1 kHz consumption exactly and never drifts with sleep jitter
         // or the display's refresh rate. Without audio, one frame per
         // iteration paced by the sleep below. Paused, nothing runs except
-        // a single requested frame advance.
-        if app.paused {
+        // a single requested frame advance. Rewinding (Backspace held),
+        // nothing is emulated: one snapshot is loaded per presented frame
+        // and the audio queue is dropped so the device holds its last
+        // sample (silence) until emulation refills it on release.
+        if app.rewinding {
+            if let Some(buffer) = &app.audio_buffer {
+                buffer.lock().unwrap().clear();
+            }
+            app.rewind_step();
+            app.osd_text = Some((
+                format!("Rewinding  {:.1} s", app.rewind_seconds()),
+                Instant::now() + Duration::from_millis(500),
+            ));
+        } else if app.paused {
             if app.frame_advance {
                 app.frame_advance = false;
                 let buffer = app.audio_buffer.clone();
                 app.system.run_frame_with_audio(buffer.as_ref());
+                app.record_rewind_frame();
             }
         } else {
             match app.audio_buffer.clone() {
@@ -548,11 +606,13 @@ fn main() -> Result<()> {
                     let mut frames = 0;
                     while buffer.lock().unwrap().len() < AUDIO_TARGET_SAMPLES && frames < 4 {
                         app.system.run_frame_with_audio(Some(&buffer));
+                        app.record_rewind_frame();
                         frames += 1;
                     }
                 }
                 None => {
                     app.system.run_frame();
+                    app.record_rewind_frame();
                 }
             }
         }
@@ -612,7 +672,7 @@ fn main() -> Result<()> {
         }
 
         let elapsed = frame_start.elapsed();
-        if app.audio_enabled() && !app.paused {
+        if app.audio_enabled() && !app.paused && !app.rewinding {
             // Audio paces emulation; just avoid spinning between presents.
             if elapsed < Duration::from_millis(2) {
                 std::thread::sleep(Duration::from_millis(1));
@@ -630,4 +690,54 @@ fn main() -> Result<()> {
 
     log::info!("Emulation stopped.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_script_taps_and_holds() {
+        let script = parse_ui_script("a,,Backspace*3,esc").unwrap();
+        let tap = |key| {
+            Some(ScriptKey {
+                key,
+                down: true,
+                up: true,
+            })
+        };
+        assert_eq!(script.len(), 6);
+        assert_eq!(script[0], tap(Keycode::A));
+        assert_eq!(script[1], None);
+        assert_eq!(
+            script[2],
+            Some(ScriptKey {
+                key: Keycode::Backspace,
+                down: true,
+                up: false
+            })
+        );
+        assert_eq!(
+            script[3],
+            Some(ScriptKey {
+                key: Keycode::Backspace,
+                down: false,
+                up: false
+            })
+        );
+        assert_eq!(
+            script[4],
+            Some(ScriptKey {
+                key: Keycode::Backspace,
+                down: false,
+                up: true
+            })
+        );
+        assert_eq!(script[5], tap(Keycode::Escape));
+        // A one-frame hold is a tap.
+        assert_eq!(parse_ui_script("x*1").unwrap()[0], tap(Keycode::X));
+        assert!(parse_ui_script("x*0").is_err());
+        assert!(parse_ui_script("x*many").is_err());
+        assert!(parse_ui_script("nosuchkey").is_err());
+    }
 }
