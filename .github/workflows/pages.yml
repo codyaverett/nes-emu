@@ -49,12 +49,27 @@ jobs:
         run: |
           set -eu
           mkdir -p site/pkg
-          cp web/index.html web/app.js web/audio-worklet.js site/
+          # Every top-level script in web/ is a page module (app.js,
+          # audio-worklet.js, storage.js, ...); scripts/ and test/ are
+          # directories and are not matched.
+          cp web/index.html web/*.js site/
           cp web/pkg/*.js web/pkg/*.wasm site/pkg/
           if [ -f web/cheats.json ]; then
             cp web/cheats.json site/
           fi
           touch site/.nojekyll
+          # Every relative import in the site's modules must resolve, or
+          # the page silently fails to boot (storage.js was missing once).
+          missing=0
+          for f in site/*.js; do
+            for dep in $(grep -oE 'from "\./[^"]+"' "$f" | sed 's/from "\.\///; s/"$//'); do
+              if [ ! -f "site/$dep" ]; then
+                echo "::error::$f imports ./$dep, which is not in the site"
+                missing=1
+              fi
+            done
+          done
+          [ "$missing" -eq 0 ]
           echo "Site contents:"
           find site -type f | sort | xargs ls -la
       - uses: actions/configure-pages@v5

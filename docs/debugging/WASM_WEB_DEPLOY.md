@@ -36,8 +36,7 @@ and uploads that directory:
 site/
   .nojekyll            tells Pages not to run Jekyll (cheap insurance)
   index.html
-  app.js
-  audio-worklet.js
+  app.js, audio-worklet.js, storage.js   every top-level web/*.js module
   pkg/nes_emu_web.js       wasm-bindgen glue
   pkg/nes_emu_web_bg.wasm  the module
   cheats.json              only if web/cheats.json exists after the build
@@ -132,3 +131,34 @@ document.
 3. The console log buffer of the Playwright server still held the
    `[nes]` pacing lines from the issue #50 session; filtering by type
    `error` and `warning` returned nothing for this page load.
+
+## First deploy (v0.14.0, 2026-09-06)
+
+The tag `v0.14.0` triggered the workflow. Two failures, both fixed:
+
+1. **Deploy job rejected.** The build job passed (module 164 429 bytes,
+   160.6 KB) but "Deploy to GitHub Pages" failed immediately. Enabling
+   Pages with the Actions source creates a `github-pages` environment
+   whose deployment branch policy allows only `main`, so a run started by
+   a tag ref is not allowed to deploy. Fix (repository setting, not a
+   file): a second policy `v*` of type `tag` on that environment,
+   added with
+
+   ```sh
+   gh api -X POST repos/codyaverett/nes-emu/environments/github-pages/deployment-branch-policies -f name='v*' -f type=tag
+   ```
+
+   Re-running the failed job then deployed and every site file answered
+   200.
+2. **Page did not boot.** Headless Chromium on the hosted URL showed the
+   cheat database, the wasm module (served as `application/wasm`) and
+   the AudioWorklet all loading over HTTPS, but `window.nesStats` never
+   appeared and one request returned 404: `storage.js`. The assembly
+   step listed the page files by name (`index.html app.js
+   audio-worklet.js`) and issue #51 added `storage.js` in a parallel
+   lane after this workflow was written; an ES module import that 404s
+   aborts the whole module graph, so `app.js` never ran. Fix: copy
+   `web/*.js` (every top-level module; `scripts/` and `test/` are
+   directories and do not match) and a check after assembly that every
+   relative `from "./x"` import in `site/*.js` exists in the site, which
+   fails the build with a `::error::` annotation otherwise.
