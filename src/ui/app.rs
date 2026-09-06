@@ -19,6 +19,7 @@ use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use nes_emu::system::System;
 
 use super::commands::{self, Command};
+use super::tools::ToolId;
 
 /// Pixels hidden on every edge of the picture when overscan cropping is
 /// on. A CRT never shows them, and games rely on that: Final Fantasy draws
@@ -67,6 +68,11 @@ pub struct App {
     pub cheat_error: Option<String>,
     /// Every command the palette can run.
     pub commands: Vec<Command>,
+    /// Set by a command that wants a page opened once it has run;
+    /// `Ui::run_command` takes it.
+    pub pending_tool: Option<ToolId>,
+    /// First address the memory page shows, kept across opens.
+    pub memory_addr: u16,
 }
 
 impl App {
@@ -94,6 +100,8 @@ impl App {
             cheat_path,
             cheat_error: None,
             commands: commands::builtin_commands(),
+            pending_tool: None,
+            memory_addr: 0,
         }
     }
 
@@ -326,5 +334,60 @@ impl App {
                 self.cheat_error = Some(message);
             }
         }
+    }
+    // ---- Example tools (issue 33) ----
+
+    /// `mem [ADDR]`: open the memory page, at hex `ADDR` when given
+    /// (`300`, `0x300` and `$300` all work; the row is aligned to 16).
+    /// A bad argument keeps the current address and logs a warning.
+    pub fn goto_memory(&mut self, arg: &str) {
+        if !arg.is_empty() {
+            match parse_hex_address(arg) {
+                Some(addr) => self.memory_addr = addr & 0xFFF0,
+                None => log::warn!("mem: not a hex address: {:?}", arg),
+            }
+        }
+        self.pending_tool = Some(ToolId::Memory);
+    }
+
+    pub fn mute_channel(&mut self, ch: usize) {
+        self.system.apu.set_channel_muted(ch, true);
+    }
+
+    pub fn toggle_channel_mute(&mut self, ch: usize) {
+        let muted = self.system.apu.channel_muted(ch);
+        self.system.apu.set_channel_muted(ch, !muted);
+    }
+
+    pub fn unmute_all(&mut self) {
+        for ch in 0..nes_emu::apu::CHANNEL_COUNT {
+            self.system.apu.set_channel_muted(ch, false);
+        }
+    }
+}
+
+/// Parse a 16-bit hex address with an optional `0x` or `$` prefix.
+pub fn parse_hex_address(text: &str) -> Option<u16> {
+    let text = text.trim();
+    let digits = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .or_else(|| text.strip_prefix('$'))
+        .unwrap_or(text);
+    u16::from_str_radix(digits, 16).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex_address;
+
+    #[test]
+    fn hex_addresses_accept_common_prefixes() {
+        assert_eq!(parse_hex_address("300"), Some(0x300));
+        assert_eq!(parse_hex_address(" 0xC000 "), Some(0xC000));
+        assert_eq!(parse_hex_address("$ff"), Some(0xFF));
+        assert_eq!(parse_hex_address("10000"), None);
+        assert_eq!(parse_hex_address("zz"), None);
+        assert_eq!(parse_hex_address(""), None);
     }
 }

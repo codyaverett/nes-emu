@@ -94,6 +94,18 @@ pub fn builtin_commands() -> Vec<Command> {
             App::cheat_toggle_command,
         ),
         Command::run("cheat clear", "Delete every cheat", App::clear_cheats),
+        // Example tools (issue 33): memory, PPU and APU pages.
+        Command::run_arg("mem", "Hex dump; mem ADDR", App::goto_memory),
+        Command::tool("ppu", "Patterns/names/pals", ToolId::Ppu),
+        Command::tool("apu", "Channel mute page", ToolId::Apu),
+        Command::run("mute pulse1", "Silence pulse 1", |app| app.mute_channel(0)),
+        Command::run("mute pulse2", "Silence pulse 2", |app| app.mute_channel(1)),
+        Command::run("mute triangle", "Silence triangle", |app| {
+            app.mute_channel(2)
+        }),
+        Command::run("mute noise", "Silence noise", |app| app.mute_channel(3)),
+        Command::run("mute dmc", "Silence DMC", |app| app.mute_channel(4)),
+        Command::run("unmute all", "Restore all channels", App::unmute_all),
     ]
 }
 
@@ -133,6 +145,8 @@ pub fn argument(input: &str, name: &str) -> String {
 }
 
 /// Indices of the commands whose names match `needle`, in registry order.
+/// A command with an argument also matches when `needle` is its name
+/// followed by the argument text.
 pub fn filter(commands: &[Command], needle: &str) -> Vec<usize> {
     let with_arg = needle.contains(' ');
     commands
@@ -225,6 +239,22 @@ mod tests {
                 c.name
             );
         }
+    }
+
+    #[test]
+    fn argument_commands_match_by_prefix() {
+        let commands = builtin_commands();
+        assert_eq!(argument("mem 300", "mem"), "300");
+        assert_eq!(argument("MEM   c000 ", "mem"), "c000");
+        assert_eq!(argument("mem", "mem"), "");
+        assert!(prefix_match("mem 300", "mem"));
+        assert!(!prefix_match("memory", "mem"));
+
+        let names: Vec<&str> = filter(&commands, "mem 300")
+            .into_iter()
+            .map(|i| commands[i].name)
+            .collect();
+        assert_eq!(names, ["mem"]);
     }
 
     #[test]

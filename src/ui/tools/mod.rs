@@ -5,6 +5,10 @@
 pub mod help;
 // Cheats (issue #32).
 pub mod cheats;
+// Example tools (issue 33).
+pub mod apu;
+pub mod memory;
+pub mod ppu;
 
 use super::tool::Tool;
 
@@ -13,6 +17,10 @@ pub enum ToolId {
     Help,
     // Cheats (issue #32).
     Cheats,
+    // Example tools (issue 33).
+    Memory,
+    Ppu,
+    Apu,
 }
 
 impl ToolId {
@@ -21,6 +29,10 @@ impl ToolId {
             ToolId::Help => Box::new(help::Help::default()),
             // Cheats (issue #32).
             ToolId::Cheats => Box::new(cheats::Cheats::default()),
+            // Example tools (issue 33).
+            ToolId::Memory => Box::new(memory::Memory::default()),
+            ToolId::Ppu => Box::new(ppu::PpuView::default()),
+            ToolId::Apu => Box::new(apu::ApuView),
         }
     }
 }

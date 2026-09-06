@@ -42,6 +42,7 @@ pub const KEY_BINDINGS: &[(&str, &str)] = &[
     ("Right Shift", "Select"),
     ("Return", "Start"),
     ("Arrows", "D-pad"),
+    ("In pages", "Left/Right views, 1-5 toggles"),
 ];
 
 enum Mode {
@@ -127,8 +128,9 @@ impl Ui {
         }
     }
 
-    /// Run the command at `index` in `app.commands`; `arg` is the text
-    /// typed after its name (ignored by commands that take none).
+    /// Run the command at `index` in `app.commands` with `arg` (empty for
+    /// commands without one). A command that sets `App::pending_tool`
+    /// gets that page opened afterwards.
     pub fn run_command(&mut self, index: usize, arg: &str, app: &mut App) {
         let name = app.commands[index].name;
         let action = app.commands[index].action;
@@ -141,6 +143,9 @@ impl Ui {
             Action::Run(f) => f(app),
             Action::RunWithArg(f) => f(app, arg),
             Action::OpenTool(id) => self.open_tool(id),
+        }
+        if let Some(id) = app.pending_tool.take() {
+            self.open_tool(id);
         }
     }
 

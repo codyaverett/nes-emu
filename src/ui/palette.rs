@@ -240,6 +240,32 @@ mod tests {
     }
 
     #[test]
+    fn enter_passes_the_argument_text() {
+        let registry = builtin_commands();
+        let mut p = Palette::new();
+        for k in [
+            Keycode::M,
+            Keycode::E,
+            Keycode::M,
+            Keycode::Space,
+            Keycode::C,
+            Keycode::Num0,
+            Keycode::Num0,
+            Keycode::Num0,
+        ] {
+            p.handle_key(k, &registry);
+        }
+        assert_eq!(names(&p, &registry), ["mem"]);
+        match p.handle_key(Keycode::Return, &registry) {
+            PaletteEvent::Run(i, arg) => {
+                assert_eq!(registry[i].name, "mem");
+                assert_eq!(arg, "c000");
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
     fn selection_clamps_and_escape_closes() {
         let registry = builtin_commands();
         let mut p = Palette::new();
