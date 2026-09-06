@@ -2,6 +2,36 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.15.0] - 2026-09-06
+
+Closes issues 52, 58, 59, 60 and 61 (docs/plans/SHARED_OVERLAY_UI.md).
+
+### Changed
+- The in-window UI (command palette, Help, Cheats, Memory, PPU, APU and
+  States pages, toasts, hotkeys and rewind) moved from the SDL binary
+  into the library behind three frontend-neutral abstractions: a Painter
+  trait for drawing, a Key enum for input and a Host trait for slot and
+  cheat storage. The SDL binary implements them over its window and the
+  file system; every one of its 15 screenshots is byte-identical before
+  and after the move (scripts/ui_screenshots.sh).
+
+### Added
+- The web page now composites the same overlay UI over the frame: the
+  backquote palette, F1 help and every tool page, toasts, R/P/N/M and
+  volume hotkeys, F5-F8 state slots backed by IndexedDB and Backspace
+  rewind all run through the shared code. The HTML toast is gone.
+- Web state slots are cached in the wasm wrapper and synced with
+  IndexedDB through dirty flags, so the States page lists them.
+
+### Fixed
+- The Pages workflow ships every top-level page module and fails the
+  build if a relative import is missing from the site; the first deploy
+  of 0.14.0 lacked storage.js and never booted. The github-pages
+  environment needs a tag deployment policy, documented in
+  docs/debugging/WASM_WEB_DEPLOY.md.
+
+---
+
 ## [0.14.0] - 2026-09-06
 
 Closes issues 51 and 53 (Phases 3 and 5 of docs/plans/WASM_WEB.md).
