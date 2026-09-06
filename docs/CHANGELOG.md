@@ -2,6 +2,31 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.12.0] - 2026-09-06
+
+Closes issues 41, 42, 43 and 44.
+
+### Added
+- Mappers 7 (AxROM), 9 (MMC2), 10 (MMC4), 11 (Color Dreams), 66 (GxROM)
+  and 69 (Sunsoft FME-7), with two mapper hooks: a PPU fetch hook for the
+  MMC2/MMC4 latch and a CPU clock hook for the FME-7 IRQ counter. The
+  SuperMarioBros.nes dump that read as mapper 66 is a real GxROM cart and
+  now renders correctly.
+- Second controller on 4017 with player 2 keys I/J/K/L, apostrophe A,
+  semicolon B, period Start, comma Select.
+- Rewind: hold Backspace to run backwards through a 20 second ring buffer
+  of save states taken every other frame (about 30 microseconds each);
+  palette commands rewind N, rewind on, rewind off.
+- The compatibility sweep starts each game from a saved state inside
+  gameplay built by tests/sweep_states.rs, with per-game input scripts; all
+  ten supported games now reach play in the sweep.
+
+### Known issues
+- The first frame after loading a state can differ on scanline 0 from an
+  uninterrupted run; identical from the second frame. Cosmetic.
+
+---
+
 ## [0.11.0] - 2026-09-06
 
 Closes issue 39.
