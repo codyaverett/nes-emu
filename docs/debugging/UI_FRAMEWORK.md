@@ -3,7 +3,8 @@
 **Date:** 2026-09-06
 **Type:** Feature / Binary UI
 **Status:** Complete; feel of the palette and key conflicts need a human
-**Tracking:** GitHub issue #30 (phase 1 of `docs/plans/TOOLS_AND_CHEATS.md`)
+**Tracking:** GitHub issue #30 (phase 1 of `docs/plans/TOOLS_AND_CHEATS.md`);
+argument commands and the Cheats page are issue #32 (phase 3)
 
 ## Executive Summary
 
@@ -32,6 +33,7 @@ src/ui/palette.rs      Palette overlay: input, subsequence filter, selection
 src/ui/tool.rs         Tool trait, ToolEvent, page chrome helpers
 src/ui/tools/mod.rs    ToolId enum and ToolId::open
 src/ui/tools/help.rs   Help page: key bindings and every command
+src/ui/tools/cheats.rs Cheats page: list, toggle, add, delete, edit
 ```
 
 ### Key routing
@@ -97,9 +99,12 @@ pub trait Tool {
 `draw` for the body, which starts at `tool::body_top(font_scale)`.
 `tool::body_grid` returns the columns and rows that fit, `tool::clip`
 truncates a line, `tool::line_step` is the row pitch (glyph plus two
-font pixels of leading). Escape never reaches a tool; returning
-`ToolEvent::Close` closes it from any other key. `tick` runs once per
-presented frame while the tool is open, paused or not.
+font pixels of leading). Escape closes the tool before it sees the key,
+unless the tool's `captures_escape` (default false) returns true; the
+Cheats page does that while an inline text entry is open so Escape
+cancels the entry instead of the page. Returning `ToolEvent::Close`
+closes the tool from any other key. `tick` runs once per presented frame
+while the tool is open, paused or not.
 
 ## Adding a tool
 
@@ -118,6 +123,101 @@ method on `App`; add one there if the state it needs is not exposed yet.
 Keep the name at most 22 characters and the description at most 21, or
 the palette clips it at the default window size (a unit test checks the
 built-ins).
+
+## Argument commands
+
+`Action::RunWithArg(fn(&mut App, &str))` is a command that receives the
+text typed after its name, trimmed: `cheat add SXIOPO` runs
+`App::cheat_add_command(app, "SXIOPO")`. Register one with
+`Command::run_arg`. Commands that take no argument ignore any trailing
+text.
+
+The palette filter changes rule once the input contains a space
+(`commands::filter`):
+
+- No space: case-insensitive subsequence match, as before (`fadv` finds
+  `frame advance`).
+- With a space: `commands::prefix_match`. A command matches when its
+  name starts with the input (`frame ` still lists `frame advance` while
+  it is being typed), or the input starts with the name followed by the
+  end of the input or a space (`cheat add SXIOPO` lists exactly
+  `cheat add`, not `cheats`). `cheat ` lists the three `cheat ...`
+  commands.
+
+On Enter the palette computes the argument with `commands::argument`
+(the input past the name, trimmed) and reports
+`PaletteEvent::Run(index, arg)`; `Ui::run_command(index, arg, app)`
+dispatches on the action. The palette types characters from key codes,
+so Shift is ignored: the screenshot shows `cheat add sxiopo` in lower
+case, and codes parse case-insensitively anyway. The two shifted
+characters raw codes need are mapped by `App::add_cheat`: `;` becomes
+`:` and `/` becomes `?`, so `075A;02` on the keyboard is `075A:02`.
+
+Argument commands report failures through `App::cheat_error`, which the
+Cheats page shows in red the next time it is open (the palette closes on
+Enter, so there is nowhere else to show them) and the log at warn level.
+
+## Cheats page
+
+`src/ui/tools/cheats.rs`, opened by the `cheats` command. Header with the
+count, the enabled count and the `.cht` file name; one row per cheat:
+1-based number (what `cheat toggle N` takes), `[x]` or `[ ]`, the code
+and the description. The list scrolls to keep the cursor visible when
+there are more cheats than rows.
+
+| Key | Action |
+| --- | --- |
+| Up / Down, PageUp / PageDown, Home / End | Move the cursor |
+| Space or Return | Toggle the selected cheat |
+| D, Delete or Backspace | Delete the selected cheat |
+| A or Insert | Add: type the code, Enter, type the description, Enter |
+| E | Edit the selected description |
+| Escape | Cancel the open text entry; otherwise close the page |
+| Q | Close the page |
+
+The page keeps a `Mode`: `List`, `EnterCode`, `EnterDescription` (the
+code already parsed) or `EditDescription`. In the entry modes every
+printable key types, so `a`, `d` and `e` are letters, not commands. The
+code is parsed on the first Enter; a rejected code stays in the entry
+with the error shown in red under the list, and the description is only
+asked for once the code is valid. Every change goes through
+`App::add_cheat`, `toggle_cheat`, `remove_cheat`,
+`set_cheat_description` or `clear_cheats`, which rewrite the `.cht`
+file (see `docs/debugging/CHEAT_ENGINE.md`).
+
+Palette commands: `cheats` opens the page, `cheat add CODE [description]`
+adds and enables a cheat, `cheat toggle N` flips the cheat numbered N on
+the page, `cheat clear` deletes all of them.
+
+Screenshots in `docs/testing/test_output/ui/`:
+
+- `cheats.png`: the page after adding `075A:02` through the A entry and
+  toggling it off with Space (the `.cht` on disk had `SXIOPO` before the
+  run).
+- `cheats-reloaded.png`: a second run of the emulator, same ROM, page
+  opened from the palette; both cheats came back from the file with the
+  second still disabled.
+- `cheats-error.png`: the entry after typing `zzz` and Enter: the error
+  in red, the entry still open.
+- `palette-cheat-add.png`: the palette with `cheat add sxiopo` typed and
+  only `cheat add` listed.
+
+Made with (`smb.nes` is a copy of Super Mario Bros. in a scratch
+directory, so the `.cht` lands there):
+
+```sh
+printf 'SXIOPO\t1\tInfinite lives\n' > smb.cht
+./target/debug/nes-emu smb.nes --no-audio \
+  --ui-script "backquote,c,h,e,a,t,s,Return,a,0,7,5,a,;,0,2,Return,l,i,v,e,s,Return,Space,,,Escape,Escape" \
+  --screenshot cheats.ppm:55
+./target/debug/nes-emu smb.nes --no-audio \
+  --ui-script "backquote,c,h,e,a,t,Space,a,d,d,Space,s,x,i,o,p,o,,,Escape,backquote,c,h,e,a,t,s,Return,,,Escape,backquote,c,h,e,a,t,Space,t,o,g,g,l,e,Space,2,Return,backquote,c,h,e,a,t,s,Return,a,z,z,z,Return,,,Escape,Escape,Escape" \
+  --screenshot palette-cheat-add.ppm:48 --screenshot cheats-reloaded.ppm:59 \
+  --screenshot cheats-error.ppm:91
+```
+
+The second run also runs `cheat toggle 2` from the palette between the
+two page screenshots; the file afterwards reads `075A:02<TAB>1<TAB>lives`.
 
 ## Key bindings
 
@@ -138,10 +238,11 @@ built-ins).
 
 Inside the palette: type to filter, Backspace, Up/Down, Enter, Escape.
 Inside Help: Up/Down/PageUp/PageDown/Home scroll; Escape, Q or Return
-close.
+close. Inside Cheats: see the table above.
 
 Built-in commands: pause, resume, frame advance, reset, mute, volume up,
-volume down, toggle overscan crop, help, quit.
+volume down, toggle overscan crop, help, quit, cheats, cheat add CODE,
+cheat toggle N, cheat clear.
 
 ## Debug flags
 
@@ -210,6 +311,28 @@ not catch:
 Earlier, `Keycode::into_i32` does not exist in sdl2 0.36; the key code is
 `#[repr(i32)]`, so `key as i32` is the conversion the palette uses.
 
+Cheats page (issue #32):
+
+1. The first footer hint, `Space toggle  A add  D delete  E edit  Esc
+   close`, is 45 characters and lost its last word at 44 columns;
+   shortened to `Space toggle A add D del E edit Esc close`.
+2. The palette draws 43 columns inside its panel (window width minus
+   the panel and text padding), one fewer than the Help page and the
+   `builtin_text_fits_the_palette` test assume, so a 21-character
+   description such as `Add code, e.g. SXIOPO` ran into the panel edge.
+   The description was shortened to 20 characters; the off-by-one in the
+   framework is left alone (it only shows at the maximum length).
+3. A `--screenshot` frame that coincides with a scripted key captures the
+   frame after that key: keys are injected before the draw. The third
+   screenshot of the first attempt landed on the Escape that closed the
+   page and showed the game.
+4. `Ui` closed a tool on Escape before the tool saw the key, so an
+   Escape meant to cancel the text entry closed the page; hence
+   `Tool::captures_escape`.
+5. Key releases reach the controller in every mode, so the Return that
+   confirms an entry logs a `START released` with nothing pressed. This
+   was already the case for Enter in the palette and is harmless.
+
 ## Needs a human
 
 - Feel of the palette: panel size, colours, the block cursor, whether
@@ -220,3 +343,7 @@ Earlier, `Keycode::into_i32` does not exist in sdl2 0.36; the key code is
   key-up as usual.
 - Pause with audio on: the callback repeats the last sample while the
   queue is empty, which is silent in practice but not a hard mute.
+- Cheats page: typing on a real keyboard (the scripted runs press key
+  codes, so Shift and the `;` to `:` mapping have only been exercised
+  that way), and whether Backspace doubling as delete in the list is a
+  surprise.

@@ -24,8 +24,9 @@ const SELECTED: Color = Color::RGBA(60, 90, 170, 255);
 pub enum PaletteEvent {
     Continue,
     Close,
-    /// Run the command at this registry index and close.
-    Run(usize),
+    /// Run the command at this registry index with the text typed after
+    /// its name (trimmed, possibly empty) and close.
+    Run(usize, String),
 }
 
 #[derive(Default)]
@@ -51,7 +52,10 @@ impl Palette {
             Keycode::Escape | Keycode::Backquote => return PaletteEvent::Close,
             Keycode::Return | Keycode::KpEnter => {
                 return match matches.get(self.selected) {
-                    Some(&index) => PaletteEvent::Run(index),
+                    Some(&index) => PaletteEvent::Run(
+                        index,
+                        commands::argument(&self.input, registry[index].name),
+                    ),
                     None => PaletteEvent::Continue,
                 };
             }
@@ -205,7 +209,32 @@ mod tests {
             p.handle_key(k, &registry);
         }
         match p.handle_key(Keycode::Return, &registry) {
-            PaletteEvent::Run(i) => assert_eq!(registry[i].name, "volume down"),
+            PaletteEvent::Run(i, arg) => {
+                assert_eq!(registry[i].name, "volume down");
+                assert_eq!(arg, "");
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn enter_passes_the_argument_after_the_name() {
+        let registry = builtin_commands();
+        let mut p = Palette::new();
+        for ch in "cheat add sxiopo".chars() {
+            let key = if ch == ' ' {
+                Keycode::Space
+            } else {
+                Keycode::from_i32(ch as i32).unwrap()
+            };
+            p.handle_key(key, &registry);
+        }
+        assert_eq!(names(&p, &registry), ["cheat add"]);
+        match p.handle_key(Keycode::Return, &registry) {
+            PaletteEvent::Run(i, arg) => {
+                assert_eq!(registry[i].name, "cheat add");
+                assert_eq!(arg, "sxiopo");
+            }
             _ => panic!("expected Run"),
         }
     }

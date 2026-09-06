@@ -2,7 +2,8 @@
 
 **Date:** 2026-09-05
 **Type:** Feature
-**Issue:** #31 (Phase 2 of docs/plans/TOOLS_AND_CHEATS.md)
+**Issue:** #31 (Phase 2 of docs/plans/TOOLS_AND_CHEATS.md); the binary
+side (page, palette commands, file load and save) is #32
 **Status:** Complete
 
 ## Executive Summary
@@ -125,6 +126,40 @@ SXIOPO	1	Infinite lives
 `InvalidData` error naming the line number and leaves the set untouched.
 `save_cheats` always writes, even an empty set, so a cleared list does not
 come back on the next load.
+
+## In the binary: load at startup, save on change
+
+`src/main.rs` derives `<rom>.cht` from the ROM path with
+`with_extension("cht")`, the same way as the `.sav` battery file, and
+calls `System::load_cheats` right after the battery load, before the
+`App` is built. `Ok(true)` is logged by the library ("Loaded N cheat(s)
+from ..."), `Ok(false)` logs "No cheat file at ..." at info level, and an
+error (unreadable or malformed file) is a warning; the emulator starts
+with an empty set rather than refusing to run. The path is stored in
+`App::cheat_path`.
+
+There is no periodic flush and no save on exit: every mutation goes
+through one of `App::add_cheat`, `toggle_cheat`, `remove_cheat`,
+`set_cheat_description` or `clear_cheats` (`src/ui/app.rs`), each of
+which ends by calling `System::save_cheats` on `cheat_path`. The library
+logs "Wrote N cheat(s) to ..." at info level; a write failure is a
+warning and is also shown on the Cheats page through `App::cheat_error`.
+Both the Cheats tool page (`src/ui/tools/cheats.rs`) and the palette
+commands `cheat add`, `cheat toggle` and `cheat clear` use these methods,
+so nothing edits `System::cheats_mut()` directly in the binary and a
+change can never be lost to a crash later in the session.
+
+`App::add_cheat` maps `;` to `:` and `/` to `?` before parsing because
+the UI types from key codes and cannot see Shift; neither character is
+valid in a code otherwise. The page and the commands are described in
+`docs/debugging/UI_FRAMEWORK.md`.
+
+Verified with two scripted runs (`--ui-script`, see UI_FRAMEWORK.md):
+the first starts with a one-line `.cht`, adds `075A:02` through the page
+and toggles it off; the file then holds both lines with `0` on the
+second. The second run loads that file, shows both cheats with the second
+disabled, and `cheat toggle 2` from the palette rewrites the line with
+`1`.
 
 ## Verification
 

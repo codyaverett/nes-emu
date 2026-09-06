@@ -1,9 +1,16 @@
 //! Command registry for the palette.
 //!
 //! A command is a name the user types, a one-line description and an
-//! action: either a plain function over the [`App`] or a tool page to
+//! action: a plain function over the [`App`], a function that also takes
+//! the text typed after the name (`cheat add SXIOPO`), or a tool page to
 //! open. The built-in set lives in [`builtin_commands`]; tools that need
 //! their own commands add them there so registration stays in one place.
+//!
+//! Matching: while the input has no space it is a case-insensitive
+//! subsequence of the name (`fadv` finds `frame advance`). Once the input
+//! contains a space the match switches to prefixes, so `cheat add SXIOPO`
+//! lists `cheat add` with `SXIOPO` as its argument, while `frame ` still
+//! finds `frame advance` on the way to typing it out.
 
 use super::app::App;
 use super::tools::ToolId;
@@ -12,6 +19,9 @@ use super::tools::ToolId;
 pub enum Action {
     /// Run immediately; the palette closes first.
     Run(fn(&mut App)),
+    /// Run with the text typed after the command name, trimmed. Empty
+    /// when the user typed the bare name.
+    RunWithArg(fn(&mut App, &str)),
     /// Replace the palette with the named tool page.
     OpenTool(ToolId),
 }
@@ -28,6 +38,14 @@ impl Command {
             name,
             description,
             action: Action::Run(f),
+        }
+    }
+
+    const fn run_arg(name: &'static str, description: &'static str, f: fn(&mut App, &str)) -> Self {
+        Command {
+            name,
+            description,
+            action: Action::RunWithArg(f),
         }
     }
 
@@ -67,6 +85,15 @@ pub fn builtin_commands() -> Vec<Command> {
         ),
         Command::tool("help", "Keys and commands", ToolId::Help),
         Command::run("quit", "Save RAM and exit", App::quit),
+        // Cheats (docs/debugging/CHEAT_ENGINE.md, issue #32).
+        Command::tool("cheats", "Cheat list page", ToolId::Cheats),
+        Command::run_arg("cheat add", "Add code e.g. SXIOPO", App::cheat_add_command),
+        Command::run_arg(
+            "cheat toggle",
+            "Flip cheat number N",
+            App::cheat_toggle_command,
+        ),
+        Command::run("cheat clear", "Delete every cheat", App::clear_cheats),
     ]
 }
 
@@ -80,12 +107,44 @@ pub fn subsequence_match(needle: &str, haystack: &str) -> bool {
         .all(|n| hay.any(|h| h == n))
 }
 
+/// True when `input` names this command, possibly followed by a space
+/// and an argument, or is itself a prefix of the name. Case-insensitive.
+/// Used once the input contains a space; see the module docs.
+pub fn prefix_match(input: &str, name: &str) -> bool {
+    let input = input.to_lowercase();
+    let name = name.to_lowercase();
+    if name.starts_with(&input) {
+        return true;
+    }
+    match input.strip_prefix(&name) {
+        Some(rest) => rest.is_empty() || rest.starts_with(' '),
+        None => false,
+    }
+}
+
+/// The text after the command name in `input`, trimmed. Empty when the
+/// input is the bare name or shorter.
+pub fn argument(input: &str, name: &str) -> String {
+    if input.len() > name.len() && input[..name.len()].eq_ignore_ascii_case(name) {
+        input[name.len()..].trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Indices of the commands whose names match `needle`, in registry order.
 pub fn filter(commands: &[Command], needle: &str) -> Vec<usize> {
+    let with_arg = needle.contains(' ');
     commands
         .iter()
         .enumerate()
-        .filter(|(_, c)| subsequence_match(needle, c.name))
+        .filter(|(_, c)| {
+            if with_arg {
+                prefix_match(needle, c.name)
+            } else {
+                subsequence_match(needle, c.name)
+            }
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -118,6 +177,39 @@ mod tests {
         assert_eq!(vol, ["volume up", "volume down"]);
 
         assert!(filter(&commands, "zzz").is_empty());
+    }
+
+    #[test]
+    fn space_switches_to_prefix_matching_with_argument() {
+        let commands = builtin_commands();
+        let names = |needle: &str| -> Vec<&str> {
+            filter(&commands, needle)
+                .into_iter()
+                .map(|i| commands[i].name)
+                .collect()
+        };
+        assert_eq!(names("cheat add SXIOPO"), ["cheat add"]);
+        assert_eq!(names("Cheat Add sxiopo"), ["cheat add"]);
+        assert_eq!(
+            names("cheat "),
+            ["cheat add", "cheat toggle", "cheat clear"]
+        );
+        assert_eq!(names("frame "), ["frame advance"]);
+        assert_eq!(names("frame advance"), ["frame advance"]);
+        assert!(names("cheat addx").is_empty());
+        assert!(names("cheatadd x").is_empty());
+        // Without a space the subsequence rule still applies.
+        assert_eq!(names("chadd"), ["cheat add"]);
+    }
+
+    #[test]
+    fn argument_is_the_trimmed_tail() {
+        assert_eq!(argument("cheat add SXIOPO", "cheat add"), "SXIOPO");
+        assert_eq!(argument("cheat add   075A:02  ", "cheat add"), "075A:02");
+        assert_eq!(argument("CHEAT ADD x", "cheat add"), "x");
+        assert_eq!(argument("cheat add", "cheat add"), "");
+        assert_eq!(argument("cheat", "cheat add"), "");
+        assert_eq!(argument("frame ", "frame advance"), "");
     }
 
     #[test]

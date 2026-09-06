@@ -102,6 +102,7 @@ fn usage(program: &str) -> ! {
         program
     );
     eprintln!("Battery-backed games read and write <rom_file with .sav extension>.");
+    eprintln!("Cheats are read from and written to <rom_file with .cht extension>.");
     eprintln!("Backquote opens the command palette; F1 opens the help page.");
     eprintln!("--screenshot PATH:N writes the window as binary PPM after N presented frames.");
     eprintln!(
@@ -339,6 +340,15 @@ fn main() -> Result<()> {
         }
     }
 
+    // Cheats live next to the ROM as <rom>.cht (docs/debugging/CHEAT_ENGINE.md).
+    // Loaded once here; the App rewrites the file on every change.
+    let cheat_path = Path::new(rom_path).with_extension("cht");
+    match system.load_cheats(&cheat_path) {
+        Ok(true) => {}
+        Ok(false) => log::info!("No cheat file at {}", cheat_path.display()),
+        Err(e) => log::warn!("Could not read {}: {}", cheat_path.display(), e),
+    }
+
     let mut app = App::new(
         system,
         audio_buffer,
@@ -346,6 +356,7 @@ fn main() -> Result<()> {
         volume,
         !options.full_frame,
         save_path,
+        cheat_path,
     );
     let mut ui = Ui::new(ui::DEFAULT_FONT_SCALE);
 

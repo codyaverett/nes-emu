@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use sdl2::rect::Rect;
 
+use nes_emu::cheat::{Cheat, CheatError};
 use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use nes_emu::system::System;
 
@@ -56,6 +57,14 @@ pub struct App {
     pub osd_until: Option<Instant>,
     /// Battery-backed PRG RAM file next to the ROM.
     pub save_path: PathBuf,
+    /// Cheat list next to the ROM (`<rom>.cht`), rewritten on every
+    /// change through the `*_cheat*` methods below.
+    pub cheat_path: PathBuf,
+    /// Last cheat error, shown in red on the Cheats page until the next
+    /// successful change. Set by the page and by `cheat add` / `cheat
+    /// toggle` from the palette, whose failures would otherwise only
+    /// reach the log.
+    pub cheat_error: Option<String>,
     /// Every command the palette can run.
     pub commands: Vec<Command>,
 }
@@ -68,6 +77,7 @@ impl App {
         volume: Arc<Mutex<f32>>,
         crop_enabled: bool,
         save_path: PathBuf,
+        cheat_path: PathBuf,
     ) -> Self {
         App {
             system,
@@ -81,6 +91,8 @@ impl App {
             quit_requested: false,
             osd_until: None,
             save_path,
+            cheat_path,
+            cheat_error: None,
             commands: commands::builtin_commands(),
         }
     }
@@ -200,5 +212,119 @@ impl App {
 
     pub fn quit(&mut self) {
         self.quit_requested = true;
+    }
+
+    // Cheats (docs/debugging/CHEAT_ENGINE.md, issue #32). Every mutation
+    // goes through one of these so the .cht file is rewritten on change.
+
+    /// Rewrite `cheat_path` from the current set; failures are logged.
+    fn save_cheats(&mut self) {
+        if let Err(e) = self.system.save_cheats(&self.cheat_path) {
+            let message = format!("Could not write {}: {}", self.cheat_path.display(), e);
+            log::warn!("{}", message);
+            self.cheat_error = Some(message);
+        }
+    }
+
+    /// Parse `code` and append it with `description`, enabled. Returns
+    /// the new index; on failure the error is also kept in `cheat_error`.
+    ///
+    /// Key codes cannot type a shifted character (`:` arrives as `;` and
+    /// `?` as `/`), so those two are mapped before parsing; neither is
+    /// valid in any code.
+    pub fn add_cheat(&mut self, code: &str, description: &str) -> Result<usize, CheatError> {
+        let code = code.replace(';', ":").replace('/', "?");
+        match Cheat::parse(&code) {
+            Ok(cheat) => {
+                let index = self
+                    .system
+                    .cheats_mut()
+                    .add(cheat.with_description(description.trim()));
+                log::info!("Added cheat {} {}", code, description.trim());
+                self.cheat_error = None;
+                self.save_cheats();
+                Ok(index)
+            }
+            Err(e) => {
+                log::warn!("Cheat {:?} rejected: {}", code, e);
+                self.cheat_error = Some(format!("{}: {}", code.trim(), e));
+                Err(e)
+            }
+        }
+    }
+
+    /// Flip the enabled flag of cheat `index`; returns the new state.
+    pub fn toggle_cheat(&mut self, index: usize) -> Option<bool> {
+        let enabled = self.system.cheats_mut().toggle(index)?;
+        let code = self.system.cheats().get(index).map(|c| c.code.clone());
+        log::info!(
+            "Cheat {} {}",
+            code.unwrap_or_default(),
+            if enabled { "enabled" } else { "disabled" }
+        );
+        self.cheat_error = None;
+        self.save_cheats();
+        Some(enabled)
+    }
+
+    pub fn remove_cheat(&mut self, index: usize) -> Option<Cheat> {
+        let cheat = self.system.cheats_mut().remove(index)?;
+        log::info!("Removed cheat {}", cheat.code);
+        self.cheat_error = None;
+        self.save_cheats();
+        Some(cheat)
+    }
+
+    pub fn set_cheat_description(&mut self, index: usize, description: &str) -> Option<()> {
+        self.system
+            .cheats_mut()
+            .set_description(index, description.trim())?;
+        self.cheat_error = None;
+        self.save_cheats();
+        Some(())
+    }
+
+    /// `cheat clear`: delete every cheat.
+    pub fn clear_cheats(&mut self) {
+        let n = self.system.cheats().len();
+        self.system.cheats_mut().clear();
+        log::info!("Cleared {} cheat(s)", n);
+        self.cheat_error = None;
+        self.save_cheats();
+    }
+
+    /// `cheat add CODE [description]` from the palette.
+    pub fn cheat_add_command(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            log::warn!("cheat add needs a code, e.g. cheat add SXIOPO");
+            self.cheat_error = Some("cheat add needs a code".into());
+            return;
+        }
+        let (code, description) = match arg.split_once(' ') {
+            Some((code, rest)) => (code, rest),
+            None => (arg, ""),
+        };
+        // The result is already logged and recorded in `cheat_error`.
+        let _ = self.add_cheat(code, description);
+    }
+
+    /// `cheat toggle N` from the palette; N is 1-based as shown on the page.
+    pub fn cheat_toggle_command(&mut self, arg: &str) {
+        let count = self.system.cheats().len();
+        match arg.trim().parse::<usize>() {
+            Ok(n) if n >= 1 && n <= count => {
+                self.toggle_cheat(n - 1);
+            }
+            _ => {
+                let message = if count == 0 {
+                    "cheat toggle: no cheats loaded".to_string()
+                } else {
+                    format!("cheat toggle needs a number 1-{}", count)
+                };
+                log::warn!("{} (got {:?})", message, arg);
+                self.cheat_error = Some(message);
+            }
+        }
     }
 }

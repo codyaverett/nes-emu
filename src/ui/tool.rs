@@ -2,9 +2,11 @@
 //!
 //! A tool implements [`Tool`]; the `Ui` owns the open one, draws the
 //! backdrop and title bar with [`draw_frame`], then calls `draw` for the
-//! body, which starts at [`body_top`]. Escape always closes the open tool
-//! (the `Ui` handles it before the tool sees the key); a tool can also
-//! close itself by returning [`ToolEvent::Close`].
+//! body, which starts at [`body_top`]. Escape closes the open tool (the
+//! `Ui` handles it before the tool sees the key) unless the tool reports
+//! [`Tool::captures_escape`], which a page does while an inline text entry
+//! is open so Escape cancels the entry instead; a tool can also close
+//! itself by returning [`ToolEvent::Close`].
 
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -22,8 +24,15 @@ pub enum ToolEvent {
 pub trait Tool {
     fn title(&self) -> &str;
 
-    /// Handle one key press. Escape never arrives here.
+    /// Handle one key press. Escape only arrives while
+    /// [`Tool::captures_escape`] returns true.
     fn handle_key(&mut self, key: Keycode, app: &mut App) -> ToolEvent;
+
+    /// True while the tool wants Escape delivered to `handle_key` instead
+    /// of closing the page (an inline text entry is open).
+    fn captures_escape(&self) -> bool {
+        false
+    }
 
     /// Draw the body below the title bar; see [`body_top`] and [`padding`].
     fn draw(&self, canvas: &mut WindowCanvas, font_scale: u32, app: &App) -> Result<(), String>;

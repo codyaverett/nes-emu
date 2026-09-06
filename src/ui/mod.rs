@@ -82,7 +82,7 @@ impl Ui {
             Consumed,
             OpenPalette,
             Close,
-            Run(usize),
+            Run(usize, String),
         }
         let outcome = match &mut self.mode {
             Mode::Game => {
@@ -95,10 +95,10 @@ impl Ui {
             Mode::Palette(palette) => match palette.handle_key(key, &app.commands) {
                 PaletteEvent::Continue => Outcome::Consumed,
                 PaletteEvent::Close => Outcome::Close,
-                PaletteEvent::Run(index) => Outcome::Run(index),
+                PaletteEvent::Run(index, arg) => Outcome::Run(index, arg),
             },
             Mode::Tool(tool) => {
-                if key == Keycode::Escape {
+                if key == Keycode::Escape && !tool.captures_escape() {
                     Outcome::Close
                 } else {
                     match tool.handle_key(key, app) {
@@ -119,21 +119,27 @@ impl Ui {
                 self.close();
                 true
             }
-            Outcome::Run(index) => {
+            Outcome::Run(index, arg) => {
                 self.close();
-                self.run_command(index, app);
+                self.run_command(index, &arg, app);
                 true
             }
         }
     }
 
-    /// Run the command at `index` in `app.commands`.
-    pub fn run_command(&mut self, index: usize, app: &mut App) {
+    /// Run the command at `index` in `app.commands`; `arg` is the text
+    /// typed after its name (ignored by commands that take none).
+    pub fn run_command(&mut self, index: usize, arg: &str, app: &mut App) {
         let name = app.commands[index].name;
         let action = app.commands[index].action;
-        log::info!("Command: {}", name);
+        if arg.is_empty() {
+            log::info!("Command: {}", name);
+        } else {
+            log::info!("Command: {} {}", name, arg);
+        }
         match action {
             Action::Run(f) => f(app),
+            Action::RunWithArg(f) => f(app, arg),
             Action::OpenTool(id) => self.open_tool(id),
         }
     }
