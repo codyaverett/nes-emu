@@ -62,6 +62,10 @@ impl Mapper for Mapper2 {
         self.chr.read((addr & 0x1FFF) as usize)
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        self.chr.read((addr & 0x1FFF) as usize)
+    }
+
     fn ppu_write(&mut self, addr: u16, value: u8) {
         self.chr.write((addr & 0x1FFF) as usize, value);
     }

@@ -72,6 +72,10 @@ impl Mapper for Mapper65 {
         self.chr.read(self.chr_offset(addr))
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        self.chr.read(self.chr_offset(addr))
+    }
+
     fn ppu_write(&mut self, addr: u16, value: u8) {
         let offset = self.chr_offset(addr);
         self.chr.write(offset, value);

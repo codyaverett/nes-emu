@@ -52,6 +52,11 @@ impl Mapper for Mapper3 {
         self.chr.read(offset)
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        let offset = self.chr_bank as usize * 0x2000 + (addr & 0x1FFF) as usize;
+        self.chr.read(offset)
+    }
+
     fn ppu_write(&mut self, addr: u16, value: u8) {
         let offset = self.chr_bank as usize * 0x2000 + (addr & 0x1FFF) as usize;
         self.chr.write(offset, value);
@@ -109,5 +114,19 @@ mod tests {
             Mirroring::Vertical,
         );
         assert_eq!(m32.cpu_read(0xC000), 1);
+    }
+
+    #[test]
+    fn ppu_peek_matches_ppu_read() {
+        let mut m = Mapper3::new(
+            tagged_rom(2, 0x4000),
+            tagged_rom(4, 0x2000),
+            Mirroring::Vertical,
+        );
+        m.cpu_write(0x8000, 2);
+        for addr in (0x0000..0x2000).step_by(0x3F) {
+            assert_eq!(m.ppu_peek(addr), m.ppu_read(addr), "addr {addr:04X}");
+        }
+        assert_eq!(m.ppu_peek(0x0000), 2);
     }
 }

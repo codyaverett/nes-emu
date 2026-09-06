@@ -554,7 +554,16 @@ pub struct Apu {
     frame_interrupt: bool,
     frame_interrupt_inhibit: bool,
     cycles: u64,
+    /// Per-channel mute flags in [`CHANNEL_NAMES`] order, applied in
+    /// `get_output` only; the channels keep running so unmuting is seamless.
+    channel_muted: [bool; CHANNEL_COUNT],
 }
+
+/// Number of mixer channels: pulse 1, pulse 2, triangle, noise, DMC.
+pub const CHANNEL_COUNT: usize = 5;
+
+/// Channel names in mute-index order.
+pub const CHANNEL_NAMES: [&str; CHANNEL_COUNT] = ["pulse1", "pulse2", "triangle", "noise", "dmc"];
 
 impl Default for Apu {
     fn default() -> Self {
@@ -580,6 +589,7 @@ impl Apu {
             frame_interrupt: false,
             frame_interrupt_inhibit: false,
             cycles: 0,
+            channel_muted: [false; CHANNEL_COUNT],
         }
     }
 
@@ -925,12 +935,32 @@ impl Apu {
         self.pulse2.clock_sweep();
     }
 
+    /// Mute or unmute one mixer channel; `ch` indexes [`CHANNEL_NAMES`].
+    /// Out-of-range indices are ignored.
+    pub fn set_channel_muted(&mut self, ch: usize, muted: bool) {
+        if let Some(flag) = self.channel_muted.get_mut(ch) {
+            *flag = muted;
+        }
+    }
+
+    /// True when channel `ch` is muted; false for out-of-range indices.
+    pub fn channel_muted(&self, ch: usize) -> bool {
+        self.channel_muted.get(ch).copied().unwrap_or(false)
+    }
+
     pub fn get_output(&self) -> f32 {
-        let pulse1 = self.pulse1._get_output() as f32;
-        let pulse2 = self.pulse2._get_output() as f32;
-        let triangle = self.triangle._get_output() as f32;
-        let noise = self.noise._get_output() as f32;
-        let dmc = self.dmc._get_output() as f32;
+        let gate = |ch: usize, level: u8| -> f32 {
+            if self.channel_muted[ch] {
+                0.0
+            } else {
+                level as f32
+            }
+        };
+        let pulse1 = gate(0, self.pulse1._get_output());
+        let pulse2 = gate(1, self.pulse2._get_output());
+        let triangle = gate(2, self.triangle._get_output());
+        let noise = gate(3, self.noise._get_output());
+        let dmc = gate(4, self.dmc._get_output());
 
         // Mix the channels using the NES non-linear mixing formula
         let pulse_out = if pulse1 + pulse2 > 0.0 {
@@ -1480,5 +1510,36 @@ mod tests {
             write_4017(&mut apu, 0x80);
         }
         assert_eq!(apu.pulse1.timer_period, 0x240);
+    }
+
+    // ---- Channel mute flags ----
+
+    #[test]
+    fn channel_mute_silences_only_that_channel_in_the_mix() {
+        let mut apu = Apu::new();
+        audible_pulse1(&mut apu, 0x100);
+        apu.pulse1.sequence_pos = 0;
+        assert!(apu.get_output() > 0.0);
+
+        apu.set_channel_muted(0, true);
+        assert!(apu.channel_muted(0));
+        assert_eq!(apu.get_output(), 0.0);
+        // The channel itself keeps running; only the mix gates it.
+        assert_eq!(pulse1_output(&mut apu), 15);
+
+        // Muting another channel does not touch pulse 1.
+        apu.set_channel_muted(0, false);
+        apu.set_channel_muted(1, true);
+        assert!(!apu.channel_muted(0));
+        assert!(apu.get_output() > 0.0);
+    }
+
+    #[test]
+    fn channel_mute_ignores_out_of_range_indices() {
+        let mut apu = Apu::new();
+        apu.set_channel_muted(CHANNEL_COUNT, true);
+        assert!(!apu.channel_muted(CHANNEL_COUNT));
+        assert!(!apu.channel_muted(usize::MAX));
+        assert_eq!(CHANNEL_NAMES.len(), CHANNEL_COUNT);
     }
 }

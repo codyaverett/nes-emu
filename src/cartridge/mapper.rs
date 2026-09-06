@@ -27,6 +27,13 @@ pub trait Mapper: Send {
     /// PPU bus write for $0000-$1FFF. Ignored by CHR ROM boards.
     fn ppu_write(&mut self, addr: u16, value: u8);
 
+    /// Side-effect-free pattern-table read used by debuggers and viewers.
+    /// Must return the same bytes as `ppu_read` through the current CHR
+    /// banking without clocking anything. The default is open bus.
+    fn ppu_peek(&self, _addr: u16) -> u8 {
+        0
+    }
+
     /// Current nametable mirroring. Queried per nametable access.
     fn mirroring(&self) -> Mirroring;
 

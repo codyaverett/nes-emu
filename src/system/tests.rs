@@ -665,3 +665,26 @@ fn cheat_file_round_trip_through_system() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// ---- Read-only accessors for viewers ----
+
+/// `peek_chr` sees CHR through the mapper (here CHR RAM written via $2007)
+/// and does not tick the PPU or touch its registers.
+#[test]
+fn peek_chr_reads_pattern_bytes_without_ticking() {
+    let mut system = system();
+    system.debug_write(0x2006, 0x01);
+    system.debug_write(0x2006, 0x23);
+    system.debug_write(0x2007, 0xAB);
+    system.debug_write(0x2007, 0xCD);
+
+    let (scanline, cycle) = (system.ppu.scanline, system.ppu.cycle);
+    assert_eq!(system.peek_chr(0x0123), 0xAB);
+    assert_eq!(system.peek_chr(0x0124), 0xCD);
+    assert_eq!(system.peek_chr(0x0125), 0x00);
+    // Only the pattern-table range is addressed; higher bits are masked.
+    assert_eq!(system.peek_chr(0x2123), 0xAB);
+    assert_eq!((system.ppu.scanline, system.ppu.cycle), (scanline, cycle));
+
+    assert_eq!(System::new().peek_chr(0x0000), 0);
+}

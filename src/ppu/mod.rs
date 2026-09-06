@@ -1262,7 +1262,8 @@ fn reverse_byte(byte: u8) -> u8 {
     result
 }
 
-const NES_PALETTE: [(u8, u8, u8); 64] = [
+/// The 64 NTSC system colours as RGB, indexed by a palette RAM entry.
+pub const NES_PALETTE: [(u8, u8, u8); 64] = [
     (0x7C, 0x7C, 0x7C),
     (0x00, 0x00, 0xFC),
     (0x00, 0x00, 0xBC),

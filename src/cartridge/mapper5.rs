@@ -289,6 +289,10 @@ impl Mapper for Mapper5 {
         self.chr.read(self.chr_offset(addr))
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        self.chr.read(self.chr_offset(addr))
+    }
+
     fn ppu_write(&mut self, addr: u16, value: u8) {
         let offset = self.chr_offset(addr);
         self.chr.write(offset, value);
@@ -422,5 +426,18 @@ mod tests {
         assert!(Mapper::irq_pending(&m));
         assert_eq!(m.cpu_read(0x5204) & 0x80, 0x80);
         assert!(!Mapper::irq_pending(&m));
+    }
+
+    #[test]
+    fn ppu_peek_matches_ppu_read() {
+        let mut m = mmc5();
+        m.cpu_write(0x5101, 3);
+        m.cpu_write(0x5120, 9);
+        m.cpu_write(0x5127, 4);
+        for addr in (0x0000..0x2000).step_by(0x3F) {
+            assert_eq!(m.ppu_peek(addr), m.ppu_read(addr), "addr {addr:04X}");
+        }
+        assert_eq!(m.ppu_peek(0x0000), 9);
+        assert_eq!(m.ppu_peek(0x1C00), 4);
     }
 }

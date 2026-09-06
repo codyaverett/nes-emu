@@ -3288,6 +3288,16 @@ impl System {
         }
     }
 
+    /// Read a pattern-table byte ($0000-$1FFF, masked) through the
+    /// cartridge's current CHR banking without ticking the PPU or the
+    /// mapper. For viewers and debuggers; returns 0 with no cartridge.
+    pub fn peek_chr(&self, addr: u16) -> u8 {
+        match self.cartridge {
+            Some(ref cart) => cart.mapper.ppu_peek(addr & 0x1FFF),
+            None => 0,
+        }
+    }
+
     /// Perform a CPU bus write with full side effects, ticking the PPU and
     /// APU as a real store would. For tests that need to program PPU or APU
     /// registers directly; game code should never need it.

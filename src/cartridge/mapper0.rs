@@ -63,6 +63,10 @@ impl Mapper for Mapper0 {
         self.chr.read((addr & 0x1FFF) as usize)
     }
 
+    fn ppu_peek(&self, addr: u16) -> u8 {
+        self.chr.read((addr & 0x1FFF) as usize)
+    }
+
     fn ppu_write(&mut self, addr: u16, value: u8) {
         self.chr.write((addr & 0x1FFF) as usize, value);
     }
@@ -134,5 +138,14 @@ mod tests {
         m.cpu_write(0x6123, 0x77);
         assert_eq!(m.cpu_read(0x6123), 0x77);
         assert_eq!(m.mirroring(), Mirroring::Horizontal);
+    }
+
+    #[test]
+    fn ppu_peek_matches_ppu_read() {
+        let mut m = Mapper0::new(vec![0; 0x8000], vec![], Mirroring::Vertical);
+        m.ppu_write(0x0123, 0xAB);
+        assert_eq!(m.ppu_peek(0x0123), 0xAB);
+        assert_eq!(m.ppu_peek(0x0123), m.ppu_read(0x0123));
+        assert_eq!(m.ppu_peek(0x0124), 0);
     }
 }
