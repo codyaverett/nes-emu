@@ -47,6 +47,37 @@
   #stats { font-family: monospace; font-size: 12px; color: #999; }
   #keys { font-size: 12px; color: #999; max-width: 720px; text-align: center; }
   kbd { background: #222; border: 1px solid #555; border-radius: 3px; padding: 0 4px; }
+  #panels {
+    display: flex; flex-wrap: wrap; gap: 16px; justify-content: center;
+    width: min(96vw, 960px);
+  }
+  .panel {
+    flex: 1 1 280px; background: #181818; border: 1px solid #333; border-radius: 6px;
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  }
+  .panel h2 { font-size: 14px; margin: 0; color: #bbb; }
+  .panel[hidden] { display: none; }
+  #slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; list-style: none; margin: 0; padding: 0; }
+  #slots li {
+    display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; cursor: pointer;
+    border: 1px solid #444; border-radius: 4px; background: #202020; font-size: 12px;
+  }
+  #slots li.active { border-color: #6cf; background: #24313a; }
+  #slots li .when { color: #888; font-family: monospace; font-size: 11px; }
+  #cheat-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
+  #cheat-list li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  #cheat-list code { font-family: monospace; background: #222; padding: 0 4px; border-radius: 3px; }
+  #cheat-list .desc { flex: 1; color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cheat-list button { padding: 2px 8px; font-size: 12px; }
+  .empty { color: #777; font-size: 12px; }
+  input[type=text] {
+    background: #111; color: #ddd; border: 1px solid #555; border-radius: 4px;
+    padding: 5px 8px; font: inherit; min-width: 0;
+  }
+  #cheat-code { font-family: monospace; width: 11em; }
+  #cheat-desc { flex: 1; }
+  form.row { justify-content: flex-start; }
+  .note { font-size: 12px; color: #888; }
 </style>
 </head>
 <body>
@@ -72,6 +103,38 @@
   Player 1: <kbd>Z</kbd> A, <kbd>X</kbd> B, <kbd>Right Shift</kbd> Select, <kbd>Enter</kbd> Start, arrows.
   Player 2: <kbd>'</kbd> A, <kbd>;</kbd> B, <kbd>,</kbd> Select, <kbd>.</kbd> Start, <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd>.
   <kbd>R</kbd> reset, <kbd>P</kbd> pause, <kbd>M</kbd> mute, <kbd>F</kbd> fullscreen.
+  <kbd>F5</kbd> save state, <kbd>F8</kbd> load state, <kbd>F6</kbd>/<kbd>F7</kbd> change slot.
+</div>
+<div id="panels">
+  <section class="panel" id="panel-states">
+    <h2>Save states</h2>
+    <ul id="slots"></ul>
+    <div class="row">
+      <button id="btn-save" title="F5">Save</button>
+      <button id="btn-load" title="F8">Load</button>
+      <button id="btn-delete-state" title="Delete the selected slot">Delete</button>
+    </div>
+    <div class="note" id="states-note">Slots are stored in this browser, keyed by the ROM's CRC-32.</div>
+  </section>
+  <section class="panel" id="panel-cheats">
+    <h2>Cheats</h2>
+    <ul id="cheat-list"></ul>
+    <form class="row" id="cheat-form" autocomplete="off">
+      <input id="cheat-code" type="text" placeholder="SXIOPO or 075A:02" spellcheck="false">
+      <input id="cheat-desc" type="text" placeholder="description">
+      <button id="btn-cheat-add" type="submit">Add</button>
+    </form>
+    <div class="note" id="cheats-note">Game Genie (6 or 8 letters), AAAA:VV, AAAA?CC:VV; join parts with +.</div>
+  </section>
+  <section class="panel" id="panel-store">
+    <h2>Store</h2>
+    <div class="row">
+      <button id="btn-export">Export all</button>
+      <label class="btn">Import<input id="import-input" type="file" accept=".json,application/json"></label>
+      <button id="btn-flush" title="Write battery RAM now">Save battery</button>
+    </div>
+    <div class="note" id="store-note">Battery RAM, state slots and cheats for every ROM as one JSON file.</div>
+  </section>
 </div>
 <script type="module" src="app.js"></script>
 </body>

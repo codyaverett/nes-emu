@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Type:** Feature Plan
-**Status:** Phases 1, 2 and 5 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md, WASM_WEB_DEPLOY.md; Phase 5 pending its first tag deploy); Phases 3 and 4 open
+**Status:** Phases 1, 2, 3 and 5 complete (docs/debugging/WASM_WEB_BUILD.md, WASM_WEB_PAGE.md, WASM_WEB_STORE.md, WASM_WEB_DEPLOY.md; Phase 5 pending its first tag deploy); Phase 4 open
 **Tracking:** GitHub issues listed per phase below
 
 ## Goal
@@ -83,11 +83,13 @@ playing SMB in Chrome, Firefox and Safari; frame timing checked against
 `requestAnimationFrame` counts and audio underrun counters printed in the
 console.
 
-### Phase 3: persistence, cheats and states in the browser (#51)
+### Phase 3: persistence, cheats and states in the browser (#51) - done (Chromium verified; Firefox and Safari need a human pass)
 IndexedDB store keyed by CRC-32 for battery RAM, nine state slots and the
 cheat text; the bundled cheat database as JSON; HTML controls for slots and
 a cheat list with add/toggle/delete; export and import of the store as a
-file so saves can move between machines.
+file so saves can move between machines. `web/storage.js`,
+`web/scripts/build-cheats.mjs`, verification in
+`docs/debugging/WASM_WEB_STORE.md`.
 
 ### Phase 4: shared overlay UI (#52)
 `Painter` trait, SDL and RGBA implementations, palette and every tool page

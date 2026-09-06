@@ -23,6 +23,7 @@ Contains debugging session notes and references:
 - `WASM_WEB_BUILD.md` - SDL behind a cargo feature, the web/ wasm-bindgen wrapper crate, the 1 MB wasm stack overflow and its fix, Node smoke test and CI (#49)
 - `WASM_WEB_PAGE.md` - The browser page: canvas crop, AudioWorklet ring and audio-clocked pacing, key map, headless Chromium verification, the detached-buffer pacing bug (#50)
 - `WASM_WEB_DEPLOY.md` - GitHub Pages workflow on version tags, the site layout, the 500 KB wasm size budget and debug-info check (npm run check-size), local verification of the assembled site (#53)
+- `WASM_WEB_STORE.md` - IndexedDB store keyed by ROM CRC-32 for battery RAM, nine state slots and cheats, the bundled cheats.json build step, HTML slot and cheat controls, export and import, headless verification (#51)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
