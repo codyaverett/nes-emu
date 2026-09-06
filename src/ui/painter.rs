@@ -140,8 +140,10 @@ impl Painter for RgbaPainter {
         for row in y0..y1 {
             let start = row as usize * stride + x0 as usize * 4;
             let end = row as usize * stride + x1 as usize * 4;
-            for px in self.pixels[start..end].chunks_exact_mut(4) {
-                blend(px, colour);
+            let mut offset = start;
+            while offset < end {
+                blend(&mut self.pixels[offset..offset + 4], colour);
+                offset += 4;
             }
         }
         Ok(())
