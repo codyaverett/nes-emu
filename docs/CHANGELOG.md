@@ -2,6 +2,19 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.8.3] - 2026-09-05
+
+### Fixed
+- Brief band of wrong colours across the top eight lines of Final Fantasy's
+  overworld when walking vertically. The game writes the incoming map row's
+  tiles in one vblank and its attribute bytes in the next while the row is
+  already on screen, and relies on TV overscan hiding those lines. The
+  display now crops 8 lines top and bottom by default, as CRTs and most
+  emulators do; pass --full-frame to see all 240 lines. The emulation
+  itself was verified correct against the PPU register trace.
+
+---
+
 ## [0.8.2] - 2026-09-05
 
 ### Fixed

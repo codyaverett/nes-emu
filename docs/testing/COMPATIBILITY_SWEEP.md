@@ -58,6 +58,17 @@ screen; that is a limit of the script, not a bug, and is noted per game.
 
 ## Findings
 
+- **Final Fantasy overworld top band (0.8.3).** Walking vertically showed a
+  one-frame band of wrong colours in the top eight lines. Tracing the PPU
+  registers showed the emulation is exact: the vertical scroll sits at
+  nametable row 29 with the correct wrap at scanline 8, and the game itself
+  writes the incoming row's tiles in one vblank and its attribute bytes in
+  the next, after the row is already visible. Real hardware does the same
+  and a CRT hides those lines in overscan. The binary now crops 8 lines top
+  and bottom by default (`--full-frame` disables it). The detector that
+  found it, comparing the top 16 rows against the rest of the frame for a
+  disagreeing scroll shift, is worth keeping in mind for similar reports.
+
 - **Mapper 227 (1200-in-1 multicart)** is not implemented. The cartridge
   loader logs "Unsupported mapper 227: falling back to NROM behaviour" and
   the game never draws anything. Tracked in issue 25.
