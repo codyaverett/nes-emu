@@ -27,6 +27,15 @@ Build the project:
 cargo build --release
 ```
 
+The SDL frontend sits behind the default `sdl` cargo feature. The core
+library builds without it, including for WebAssembly:
+```bash
+cargo test --no-default-features                                   # core only
+cargo build -p nes-emu-web --release --target wasm32-unknown-unknown
+cd web && npm test                                                 # wasm-pack build + Node smoke test
+```
+See `web/README.md` and `docs/plans/WASM_WEB.md`.
+
 ## Running
 
 ```bash

@@ -3343,12 +3343,59 @@ impl System {
 
     /// PRG RAM of the loaded cartridge if, and only if, the iNES header
     /// flags it as battery backed and the mapper exposes PRG RAM.
-    fn battery_ram(&self) -> Option<&[u8]> {
+    pub fn battery_ram(&self) -> Option<&[u8]> {
         let cart = self.cartridge.as_ref()?;
         if !cart.battery_backed {
             return None;
         }
         cart.mapper.prg_ram()
+    }
+
+    /// Replace battery-backed PRG RAM with `data` and mark it as saved.
+    ///
+    /// The byte-level counterpart of `load_battery` for frontends without
+    /// a file system (the web page keeps saves in IndexedDB). Returns
+    /// `false` without touching RAM when the cartridge is not battery
+    /// backed or when `data` is not exactly the board's PRG RAM size.
+    pub fn set_battery_ram(&mut self, data: &[u8]) -> bool {
+        let expected = match self.battery_ram() {
+            Some(ram) => ram.len(),
+            None => return false,
+        };
+        if data.len() != expected {
+            log::warn!(
+                "Ignoring battery data: {} bytes, expected {}",
+                data.len(),
+                expected
+            );
+            return false;
+        }
+        let ram = self
+            .cartridge
+            .as_mut()
+            .and_then(|cart| cart.mapper.prg_ram_mut())
+            .expect("battery_ram() checked the cartridge and mapper");
+        ram.copy_from_slice(data);
+        self.battery_saved_hash.set(Some(Self::hash_ram(ram)));
+        true
+    }
+
+    /// True when battery-backed PRG RAM differs from what was last loaded,
+    /// saved, or set through `set_battery_ram`; a cartridge that was never
+    /// saved counts as dirty. Frontends that persist RAM themselves poll
+    /// this and call `mark_battery_saved` after writing.
+    pub fn battery_dirty(&self) -> bool {
+        match self.battery_ram() {
+            Some(ram) => self.battery_saved_hash.get() != Some(Self::hash_ram(ram)),
+            None => false,
+        }
+    }
+
+    /// Record the current PRG RAM contents as saved (see `battery_dirty`).
+    pub fn mark_battery_saved(&self) {
+        if let Some(ram) = self.battery_ram() {
+            self.battery_saved_hash.set(Some(Self::hash_ram(ram)));
+        }
     }
 
     fn hash_ram(ram: &[u8]) -> u64 {

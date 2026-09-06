@@ -3,10 +3,30 @@ name = "nes-emu"
 version = "0.12.1"
 edition = "2021"
 
+[workspace]
+members = ["web"]
+
+[features]
+# The SDL2 desktop frontend (src/main.rs and src/ui/). The library itself
+# has no SDL dependency, so `--no-default-features` builds it for targets
+# without SDL such as wasm32-unknown-unknown (docs/plans/WASM_WEB.md).
+default = ["sdl"]
+sdl = ["dep:sdl2", "dep:env_logger"]
+
 [dependencies]
-sdl2 = "0.36"
+sdl2 = { version = "0.36", optional = true }
 bitflags = "2.4"
 log = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", optional = true }
 anyhow = "1.0"
 thiserror = "1.0"
+
+[[bin]]
+name = "nes-emu"
+path = "src/main.rs"
+required-features = ["sdl"]
+
+# Size over speed for the wasm module; the native binary keeps the default
+# release profile. Profiles are only honoured at the workspace root.
+[profile.release.package.nes-emu-web]
+opt-level = "s"

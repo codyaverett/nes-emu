@@ -20,11 +20,13 @@ Contains debugging session notes and references:
 - `CHEAT_ENGINE.md` - Game Genie and raw code decoding, ROM-read and per-frame RAM-freeze hooks in System, .cht file format, headless SMB SXIOPO proof (#31)
 - `UI_FRAMEWORK.md` - In-window UI for the SDL binary: 8x8 bitmap font, command palette, Tool trait and Help page, App state, --screenshot and --ui-script debug flags (#30)
 - `SAVE_STATES.md` - Whole-machine save states: the NESS section format field by field, Snapshot trait and Mapper save/load hooks, F5/F8 slots and the States page, the field audit method (#39)
+- `WASM_WEB_BUILD.md` - SDL behind a cargo feature, the web/ wasm-bindgen wrapper crate, the 1 MB wasm stack overflow and its fix, Node smoke test and CI (#49)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
 - `ACCURACY_ROADMAP.md` - Phased plan to reach test-ROM compliance (GitHub issues #1-#5)
 - `TOOLS_AND_CHEATS.md` - Command palette, tool pages and cheat engine (issues #30-#33)
+- `WASM_WEB.md` - Running the emulator in a web page through WebAssembly (issues #49-#53)
 
 ### `/testing/`
 Contains testing guides and documentation:

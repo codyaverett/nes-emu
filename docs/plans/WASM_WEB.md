@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Type:** Feature Plan
-**Status:** Proposed; issues filed per phase
+**Status:** Phase 1 complete (docs/debugging/WASM_WEB_BUILD.md); Phases 2-5 open
 **Tracking:** GitHub issues listed per phase below
 
 ## Goal
@@ -70,7 +70,7 @@ web page gets an HTML palette and cheat list, which is enough to play.
 
 ## Phases
 
-### Phase 1: crate split and wasm build (#49)
+### Phase 1: crate split and wasm build (#49) - done
 Feature-gate the SDL frontend, add the `web/` wasm-bindgen crate with the
 `Emulator` wrapper, a CI job that builds `wasm32-unknown-unknown`, and a
 headless smoke test in Node or the wasm test runner that runs 60 frames of

@@ -158,3 +158,44 @@ fn missing_file_and_size_mismatch_are_ignored() {
 
     std::fs::remove_file(&path).unwrap();
 }
+
+// ----------------------------------------------------------------------
+// Byte-level API used by frontends without a file system (issue #49,
+// docs/plans/WASM_WEB.md).
+// ----------------------------------------------------------------------
+
+#[test]
+fn battery_bytes_round_trip_and_track_dirtiness() {
+    let mut first = system_with(true);
+    assert!(first.battery_dirty(), "never-saved RAM counts as dirty");
+    first.mark_battery_saved();
+    assert!(!first.battery_dirty());
+    fill_prg_ram(&mut first);
+    assert!(first.battery_dirty(), "poking RAM makes it dirty");
+    let bytes = first.battery_ram().expect("battery backed").to_vec();
+    assert_eq!(bytes.len(), PRG_RAM_SIZE);
+    first.mark_battery_saved();
+    assert!(!first.battery_dirty(), "mark_battery_saved clears the flag");
+
+    let mut second = system_with(true);
+    assert!(second.set_battery_ram(&bytes), "matching size is accepted");
+    assert!(!second.battery_dirty(), "set_battery_ram counts as saved");
+    for i in 0..PRG_RAM_SIZE {
+        assert_eq!(second.peek(PRG_RAM_START + i as u16), pattern(i));
+    }
+    assert!(!second.set_battery_ram(&bytes[..10]), "wrong size rejected");
+    assert_eq!(
+        second.peek(PRG_RAM_START + 10),
+        pattern(10),
+        "RAM untouched"
+    );
+}
+
+#[test]
+fn battery_bytes_absent_without_battery_flag() {
+    let mut system = system_with(false);
+    assert!(system.battery_ram().is_none());
+    assert!(!system.set_battery_ram(&[0; PRG_RAM_SIZE]));
+    assert!(!system.battery_dirty());
+    system.mark_battery_saved();
+}

@@ -1,0 +1,13 @@
+{
+  "name": "nes-emu-web",
+  "private": true,
+  "version": "0.12.1",
+  "description": "Browser front end for nes-emu (docs/plans/WASM_WEB.md)",
+  "type": "module",
+  "scripts": {
+    "build": "wasm-pack build --release --target web --out-dir pkg",
+    "build:node": "wasm-pack build --release --target nodejs --out-dir pkg-node",
+    "test": "npm run build:node && node test/smoke.mjs",
+    "serve": "python3 -m http.server 8080 --bind 127.0.0.1"
+  }
+}

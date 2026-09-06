@@ -10,3 +10,8 @@ check_nametables.rs
 # Documentation test outputs (keep docs structure but ignore generated files)
 docs/testing/test_output/*.ppm
 docs/testing/test_output/*_debug.txt
+
+# wasm-pack output (web/README.md)
+web/pkg
+web/pkg-node
+web/node_modules
