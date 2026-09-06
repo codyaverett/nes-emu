@@ -2,6 +2,30 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.9.0] - 2026-09-06
+
+Closes issues 25, 26, 27 and 31. Test ROM status: 82 of 83 blargg suites
+pass (seven DMA suites added), all 7 nestest checks.
+
+### Added
+- Battery-backed PRG RAM is saved to a .sav file next to the ROM, flushed
+  every five seconds when changed and on exit (issue 26). Zelda and Final
+  Fantasy keep their saves. See docs/debugging/BATTERY_SAVES.md.
+- Mapper 227 for address-latch multicarts; the 1200-in-1 menu and its games
+  run (issue 25).
+- DMC DMA halts the CPU and reads through the bus, with the repeated read
+  that doubles controller clocks and 2007 reads, and the OAM DMA overlap
+  rules (issue 27). blargg sprdma_and_dmc_dma and dmc_dma_during_read4 pass.
+  Indexed stores now perform their hardware dummy read. See
+  docs/debugging/DMC_DMA.md.
+- Cheat engine in the library: Game Genie six and eight letter codes, raw
+  address codes, per-frame RAM freezes, a .cht file next to the ROM (issue
+  31). Verified headlessly with SXIOPO on Super Mario Bros. See
+  docs/debugging/CHEAT_ENGINE.md. The in-app cheat page and command palette
+  follow in issues 30, 32 and 33.
+
+---
+
 ## [0.8.4] - 2026-09-05
 
 ### Fixed
