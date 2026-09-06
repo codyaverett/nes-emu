@@ -8,6 +8,7 @@ pub mod mapper;
 pub mod mapper0;
 pub mod mapper1;
 pub mod mapper2;
+pub mod mapper227;
 pub mod mapper3;
 pub mod mapper4;
 pub mod mapper5;
@@ -138,6 +139,7 @@ impl Cartridge {
             4 => Box::new(mapper4::Mapper4::new(prg_rom, chr_rom, mirroring)),
             5 => Box::new(mapper5::Mapper5::new(prg_rom, chr_rom, mirroring)),
             65 => Box::new(mapper65::Mapper65::new(prg_rom, chr_rom, mirroring)),
+            227 => Box::new(mapper227::Mapper227::new(prg_rom, chr_rom, mirroring)),
             other => {
                 log::warn!(
                     "Unsupported mapper {}: falling back to NROM behaviour",

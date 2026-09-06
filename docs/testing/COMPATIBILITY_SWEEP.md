@@ -54,7 +54,7 @@ screen; that is a limit of the script, not a bug, and is noted per game.
 | river_city_ransom.nes | 4 | Cross Town High, Alex fighting two gang members | OK |
 | Tetris.nes | 1 (archaic header) | A-Type level select and high score table | OK |
 | SuperMarioBros.nes | reads as 66 | Not exercised; dirty header, use mario.nes | Skip |
-| 1200-in-1.nes | 227 | Solid blue at every checkpoint | FAIL: mapper 227 unsupported (issue 25) |
+| 1200-in-1.nes | 227 | Menu draws; script's first Start launches Bomberman, stage 1 board with enemies at 900 (paused by the later Start taps) | OK since issue 25; menu navigates with Select (page) and Down/Up (line), not Right |
 
 ## Findings
 
@@ -86,9 +86,14 @@ screen; that is a limit of the script, not a bug, and is noted per game.
   found it, comparing the top 16 rows against the rest of the frame for a
   disagreeing scroll shift, is worth keeping in mind for similar reports.
 
-- **Mapper 227 (1200-in-1 multicart)** is not implemented. The cartridge
-  loader logs "Unsupported mapper 227: falling back to NROM behaviour" and
-  the game never draws anything. Tracked in issue 25.
+- **Mapper 227 (1200-in-1 multicart)** was unimplemented at 0.8.0: the
+  loader fell back to NROM and every frame was the solid backdrop. Issue 25
+  added `src/cartridge/mapper227.rs` (see
+  docs/debugging/MAPPER_TRAIT_REFACTOR.md). The menu now draws with no
+  input, Select pages it, Down/Up move the cursor, and Start launches the
+  highlighted game; Bomberman and Galaxian both reach their title or first
+  stage. Right is not a menu key on this cart, so the sweep script simply
+  starts the default entry.
 - No rendering defect was seen in any supported game across 2400 frames of
   scripted play.
 

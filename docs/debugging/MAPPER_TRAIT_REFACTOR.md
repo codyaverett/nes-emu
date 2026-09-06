@@ -116,6 +116,54 @@ using the mirroring the mapper reports at that moment.
 | `mapper4.rs` | MMC3 | Rewritten to absolute addresses; `clock_scanline` is byte-for-byte the old counter. `$A001` bit 7 enables PRG RAM (default enabled), bit 6 write-protects. Nothing calls `clock_scanline` yet; issue #3 wires the A12 edge and delivers the IRQ. |
 | `mapper5.rs` | MMC5 | Wired for the first time. PRG/CHR modes, multiplier, ExRAM, register file. ExRAM nametables, fill mode and the vertical split are recorded but not rendered (the PPU has no per-table nametable hook); `mirroring()` approximates `$5105`. |
 | `mapper65.rs` | Irem H3001 | Moved out of `mod.rs`. CHR registers corrected from `$9000-$9007` to `$B000-$B007` (nesdev); the old offset never mattered because CHR never reached the PPU. |
+| `mapper227.rs` | Address-latch multicart (1200-in-1) | Added for issue 25, see below. |
+
+### Mapper 227 (issue 25)
+
+The 1200-in-1 multicart (`roms/1200-in-1.nes`, 512 KB PRG, CHR RAM) is
+iNES mapper 227. The register is the CPU address of any write to
+`$8000-$FFFF`; the data byte is ignored. Per nesdev "INES Mapper 227":
+
+```text
+[A~1... .mLQ OQQP PpMS]
+         ||| |||| |||+- S: 0 = 16 KB mode, 1 = 32 KB mode (PRG A14 = CPU A14)
+         ||| |||| ||+-- M: 0 = vertical mirroring, 1 = horizontal
+         ||| |||+-++--- PPp: inner 16 KB bank (PRG A16..A14)
+         ||+-|++------- QQQ: outer 128 KB bank (PRG A19..A17; bit 8 is A19)
+         ||  +--------- O: 0 = UNROM-like, $C000 fixed to inner bank 0 or 7
+         ||               1 = NROM: $C000 mirrors $8000 (S=0) or 32 KB bank (S=1)
+         |+------------ L: inner bank fixed at $C000 when O=0 (0 -> #0, 1 -> #7)
+         +------------- m: solder-pad menu select (submapper 1 only, ignored)
+```
+
+Implementation notes:
+
+- The 16 KB bank number is `((addr >> 2) & 0x1F) | ((addr >> 3) & 0x20)`:
+  bit 7 (O) sits between the two bank fields and must be skipped. Out of
+  range banks wrap to the image size through `prg_read`.
+- With O=0 the `$C000` bank is the outer 128 KB block's inner bank 0 (L=0)
+  or 7 (L=1); the `$8000` bank is the full number, with its low bit cleared
+  when S=1 (nesdev calls this "pointless" but it is what the board does).
+- CHR RAM is write-protected while O=1 (the multicart variant). The Chinese
+  RPG boards that keep it writable in NROM mode are not distinguished; no
+  such ROM is in `roms/`.
+- Power-on latch is 0: bank 0 at both halves, vertical mirroring, CHR RAM
+  writable. The header mirroring bit is ignored because the latch owns it.
+
+Unit tests (`tagged_rom(32, 0x4000)`, 64 banks for the A19 case) cover
+power-on state, O=0 with L=0 and L=1 across outer blocks, O=0 with S=1
+reaching only even banks, NROM-128 mirroring, NROM-256 32 KB pairs, bit 8
+as the high bank bit with bit 7 not leaking in, the latch ignoring the data
+byte and sub-`$8000` writes, mirroring from bit 1, and CHR RAM write
+protection following O.
+
+Frame dumps with the ROM: the menu ("1200 IN 1 / PUSH SEL . START BUTTON",
+twenty titles per page, cursor on entry 10) draws at frame 200 with no
+input. Select pages the list by twenty entries, Down moves the cursor one
+line, and Start launches the highlighted game (Bomberman, Galaxian). Right
+does nothing on this menu; it is not a navigation key there. The
+compatibility sweep's fixed script (Start at 150) therefore lands in
+Bomberman stage 1.
 
 ### Behaviour changes beyond CHR routing
 
