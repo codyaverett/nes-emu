@@ -7,8 +7,11 @@
 //! released, a few idle frames run so no held input is baked into the
 //! image, and `System::save_state` writes `roms/<stem>.sweep.state`.
 //! The state is then verified: a fresh `System` loads the ROM and the
-//! image, and the first frame it draws must equal the frame the recipe
-//! run draws next.
+//! image, both machines run 60 frames, and their frame buffers and
+//! complete state images must be identical. (The first frame alone can
+//! differ on row 0: the frame buffer is not in the image and `run_frame`
+//! returns after scanline 0 has partly been drawn; that is printed as a
+//! note.)
 //!
 //! ```text
 //! # all games
@@ -206,7 +209,20 @@ fn build(recipe: Recipe) -> Option<PathBuf> {
     sys.run_frame();
     fresh.run_frame();
     if fnv(sys.get_frame_buffer()) != fnv(fresh.get_frame_buffer()) {
-        println!("{stem}: note: first frame after load differs (rendering off at the save point?)");
+        let (a, b) = (sys.get_frame_buffer(), fresh.get_frame_buffer());
+        let rows: Vec<usize> = (0..240)
+            .filter(|y| a[y * 768..(y + 1) * 768] != b[y * 768..(y + 1) * 768])
+            .collect();
+        let blank = rows
+            .iter()
+            .filter(|&&y| b[y * 768..(y + 1) * 768].iter().all(|&p| p == b[y * 768]))
+            .count();
+        println!(
+            "{stem}: note: first frame after load differs on {} rows ({}..={}), {blank} of them flat in the fresh machine",
+            rows.len(),
+            rows.first().unwrap(),
+            rows.last().unwrap()
+        );
     }
     for _ in 1..VERIFY {
         sys.run_frame();
