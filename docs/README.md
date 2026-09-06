@@ -18,10 +18,12 @@ Contains debugging session notes and references:
 - `TETRIS_MMC1_FIX.md` - Tetris garbled tiles traced to an archaic DiskDude iNES header read as mapper 65; header sanitising in the cartridge loader (#22)
 - `BATTERY_SAVES.md` - Battery-backed PRG RAM persisted to a .sav file next to the ROM; Mapper prg_ram accessors, System::load_battery/save_battery, hash-based dirty flush (#26)
 - `CHEAT_ENGINE.md` - Game Genie and raw code decoding, ROM-read and per-frame RAM-freeze hooks in System, .cht file format, headless SMB SXIOPO proof (#31)
+- `UI_FRAMEWORK.md` - In-window UI for the SDL binary: 8x8 bitmap font, command palette, Tool trait and Help page, App state, --screenshot and --ui-script debug flags (#30)
 
 ### `/plans/`
 Contains implementation plans and roadmaps:
 - `ACCURACY_ROADMAP.md` - Phased plan to reach test-ROM compliance (GitHub issues #1-#5)
+- `TOOLS_AND_CHEATS.md` - Command palette, tool pages and cheat engine (issues #30-#33)
 
 ### `/testing/`
 Contains testing guides and documentation:
@@ -36,6 +38,7 @@ Contains testing guides and documentation:
 Contains test output files (screenshots and debug logs):
 - `test_frame_*.ppm` - PPM image files of test frames
 - `test_frame_*_debug.txt` - Debug text output for corresponding frames
+- `ui/palette.png`, `ui/help.png` - Command palette and Help page captured with --screenshot (#30)
 
 ### `/summaries/`
 Contains summaries of fixes and improvements:

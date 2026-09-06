@@ -30,8 +30,11 @@ cargo build --release
 ## Running
 
 ```bash
-cargo run --release <path_to_rom.nes>
+cargo run --release <path_to_rom.nes> [--no-audio] [--full-frame] [--screenshot PATH:N] [--ui-script KEYS]
 ```
+
+`--screenshot` and `--ui-script` are debug flags for capturing the window
+headlessly; see `docs/debugging/UI_FRAMEWORK.md`.
 
 Or after building:
 ```bash
@@ -61,8 +64,12 @@ Or use the provided test scripts:
 - **X**: B button  
 - **Enter**: Start
 - **Right Shift**: Select
+- **Backquote**: Open the command palette (type to filter, Enter runs, Escape closes)
+- **F1**: Help page with every key and command
+- **P** / **N**: Pause or resume / frame advance
+- **M**, **Plus**, **Minus**: Mute, volume up, volume down
 - **R**: Reset emulator
-- **Escape**: Exit
+- **Escape**: Close the palette or tool page; in the game, exit
 
 ## Supported Mappers
 
