@@ -2986,6 +2986,13 @@ impl System {
         }
     }
 
+    /// Perform a CPU bus write with full side effects, ticking the PPU and
+    /// APU as a real store would. For tests that need to program PPU or APU
+    /// registers directly; game code should never need it.
+    pub fn debug_write(&mut self, addr: u16, value: u8) {
+        self.write_byte(addr, value);
+    }
+
     /// Side-effect-free little-endian 16-bit read built on `peek`.
     pub fn peek_word(&self, addr: u16) -> u16 {
         let lo = self.peek(addr) as u16;

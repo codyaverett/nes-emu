@@ -28,12 +28,14 @@ const AUDIO_TARGET_SAMPLES: usize = 2450;
 /// queue between presents.
 const AUDIO_DEVICE_SAMPLES: u16 = 512;
 
-/// Scanlines hidden at the top and bottom of the picture by default. A CRT
-/// never shows them, and games rely on that: Final Fantasy, for one, draws
-/// the map row scrolling in at the top one frame before its attribute
-/// bytes, so the top eight lines flash the wrong palette on every row
-/// change. Pass --full-frame to see all 240 lines.
-const OVERSCAN_LINES: u32 = 8;
+/// Pixels hidden on every edge of the picture by default. A CRT never
+/// shows them, and games rely on that: Final Fantasy draws the map row
+/// scrolling in at the top one frame before its attribute bytes, so the top
+/// eight lines flash the wrong palette on every row change; Super Mario
+/// Bros. 3 hides the left eight pixels with the PPU mask and lets the
+/// rightmost few pixels show the not-yet-redrawn column while scrolling.
+/// Pass --full-frame to see all 256 by 240 pixels.
+const OVERSCAN_PIXELS: u32 = 8;
 
 struct ApuAudioCallback {
     audio_buffer: Arc<Mutex<VecDeque<f32>>>,
@@ -87,9 +89,10 @@ fn main() -> Result<()> {
     let rom_path = &args[1];
     let enable_audio = !args.contains(&"--no-audio".to_string());
     let full_frame = args.contains(&"--full-frame".to_string());
-    let crop = if full_frame { 0 } else { OVERSCAN_LINES };
+    let crop = if full_frame { 0 } else { OVERSCAN_PIXELS };
+    let visible_width = SCREEN_WIDTH as u32 - 2 * crop;
     let visible_height = SCREEN_HEIGHT as u32 - 2 * crop;
-    let src_rect = Rect::new(0, crop as i32, SCREEN_WIDTH as u32, visible_height);
+    let src_rect = Rect::new(crop as i32, crop as i32, visible_width, visible_height);
 
     if !enable_audio {
         log::info!("Audio disabled via command-line flag");
@@ -108,7 +111,7 @@ fn main() -> Result<()> {
     let window = video_subsystem
         .window(
             "NES Emulator",
-            SCREEN_WIDTH as u32 * SCALE,
+            visible_width * SCALE,
             visible_height * SCALE,
         )
         .position_centered()

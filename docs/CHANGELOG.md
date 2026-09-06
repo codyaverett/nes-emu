@@ -2,6 +2,25 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.8.4] - 2026-09-05
+
+### Fixed
+- Super Mario Bros. 3 showed a black column on the left and, while
+  scrolling, a few columns on the right containing the far-left of the
+  level. Both are the game's own behaviour: it runs its horizontal levels
+  with horizontal mirroring, so the picture wraps every 256 pixels, hides
+  the left eight pixels with the PPU mask, and redraws the incoming column
+  just as it scrolls in. The PPU was verified to render every column
+  correctly at all 512 horizontal scroll positions with a self-labelling
+  test nametable. The default overscan crop now covers all four edges (8
+  pixels each); --full-frame shows everything.
+
+### Added
+- System::debug_write for tests that need to program PPU or APU registers
+  through the ticking bus.
+
+---
+
 ## [0.8.3] - 2026-09-05
 
 ### Fixed

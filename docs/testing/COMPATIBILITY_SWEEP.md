@@ -58,6 +58,23 @@ screen; that is a limit of the script, not a bug, and is noted per game.
 
 ## Findings
 
+- **SMB3 left border and right-edge seam (0.8.4).** In levels the game
+  clears the PPU mask's left-column bits, so the leftmost 8 pixels are
+  always blank, and it runs horizontally scrolling levels with horizontal
+  mirroring (it never writes the MMC3 mirroring register in 1-1), so the
+  picture wraps every 256 pixels and the rightmost columns show the
+  far-left of the nametable until the game redraws them. Measured while
+  running through 1-1: the stale seam is 1 to 4 pixels wide on most
+  scrolling frames and 13 at worst. A self-labelling test nametable rendered
+  at all 512 horizontal scroll values showed every column correct, so the
+  PPU is not at fault. The binary now crops 8 pixels on all four edges by
+  default.
+- **Reaching an SMB3 level from a script.** Two Start presses reach the
+  map (a third lands on the map and breaks movement). Then hold Right 40
+  frames, wait, press A, press Up, press Right again, press A: the first A
+  on the level panel is ignored and the second enters. Mario's map X is at
+  zero page $79 (START is $20, level 1 is $40).
+
 - **Final Fantasy overworld top band (0.8.3).** Walking vertically showed a
   one-frame band of wrong colours in the top eight lines. Tracing the PPU
   registers showed the emulation is exact: the vertical scroll sits at
