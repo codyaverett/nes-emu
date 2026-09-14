@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-14
 **Type:** Feature Plan
-**Status:** Planned
+**Status:** Phases 1 to 4 implemented on branch widescreen (docs/debugging/WIDESCREEN.md); the panorama pixel cache from the Phase 4 sketch was dropped after measurement, the stale-column rule uses $2007 write stamps instead
 **Tracking:** parent #63; Phase 1 #64, Phase 2 #65, Phase 3 #66, Phase 4 #67
 
 ## Goal

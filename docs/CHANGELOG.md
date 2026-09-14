@@ -2,6 +2,33 @@
 
 All notable changes to the NES emulator will be documented in this file.
 
+## [0.16.0] - 2026-09-14
+
+Closes issues 63, 64, 65, 66 and 67 (docs/plans/WIDESCREEN.md).
+
+### Added
+- Wide view: an optional mode that draws background tiles beyond the
+  left and right picture edges from the nametable strip the game already
+  fills, toggled at any time with W or the `wide` palette command
+  (off, 16:9, max). Off by default; every existing output is
+  byte-identical with it off. Sprites stay inside the native picture.
+- The PPU samples each visible line's scroll at dot 320 of the previous
+  line and renders the side strips from it through side-effect-free
+  pattern reads, so status-bar splits and MMC3 counting are unaffected.
+- A stale-column rule blanks never-shown columns the game has not
+  written since their strip memory was last on screen, and per-game
+  profiles (Super Mario Bros) keep status-bar lines out of the strips.
+- The SDL window and texture resize with the mode; the web page sizes
+  its canvases from the core's picture rectangle and has a Wide button.
+- `tests/widescreen.rs` (ignored, needs roms/) measures strip accuracy
+  against later frames on Super Mario Bros: 94.6% of pixels.
+
+### Changed
+- In wide mode the overscan crop applies vertically only, and the
+  leftmost 8 columns a game masks are redrawn from the nametable.
+
+---
+
 ## [0.15.0] - 2026-09-06
 
 Closes issues 52, 58, 59, 60 and 61 (docs/plans/SHARED_OVERLAY_UI.md).
