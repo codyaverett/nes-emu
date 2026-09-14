@@ -57,6 +57,7 @@ pub const KEY_BINDINGS: &[(&str, &str)] = &[
     ("F5 / F8", "Save / load state (slot)"),
     ("F6 / F7", "Previous / next state slot"),
     ("Backspace", "Hold to rewind (2x back)"),
+    ("W", "Wide view: off / 16:9 / max"),
     ("Z / X", "A / B"),
     ("Right Shift", "Select"),
     ("Return", "Start"),
@@ -121,6 +122,8 @@ impl Ui {
             Key::Char('m') => app.toggle_mute(),
             Key::Char('=') | Key::Char('+') => app.volume_up(),
             Key::Char('-') => app.volume_down(),
+            // Wide view (docs/plans/WIDESCREEN.md, issue #63).
+            Key::Char('w') => app.toggle_wide(),
             // Save states (docs/debugging/SAVE_STATES.md).
             Key::F5 => app.save_state(),
             Key::F6 => app.prev_slot(),

@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::cheat::{Cheat, CheatError};
-use crate::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH, WIDE_EXT, WIDE_WIDTH};
 use crate::system::System;
 
 use super::commands::{self, Command};
@@ -54,6 +54,46 @@ pub const REWIND_MAX_ENTRIES: usize = 600;
 /// NES frames per second, used to turn snapshot counts into seconds.
 const FRAMES_PER_SECOND: f32 = 60.0;
 
+/// Wide view mode (docs/plans/WIDESCREEN.md): how many background columns
+/// beyond each picture edge the frontends show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WideMode {
+    #[default]
+    Off,
+    /// 16:9 for the visible height at the NES 8:7 pixel aspect: 59 extra
+    /// columns per side at 240 lines, 47 at the 224-line overscan crop.
+    Wide16x9,
+    /// Every column the PPU renders: `ppu::WIDE_EXT` per side.
+    Max,
+}
+
+impl WideMode {
+    pub fn next(self) -> WideMode {
+        match self {
+            WideMode::Off => WideMode::Wide16x9,
+            WideMode::Wide16x9 => WideMode::Max,
+            WideMode::Max => WideMode::Off,
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<WideMode> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(WideMode::Off),
+            "16:9" | "16x9" | "on" => Some(WideMode::Wide16x9),
+            "max" => Some(WideMode::Max),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            WideMode::Off => "off",
+            WideMode::Wide16x9 => "16:9",
+            WideMode::Max => "max",
+        }
+    }
+}
+
 pub struct App {
     pub system: System,
     /// `None` when audio is disabled; then the frame loop paces itself.
@@ -66,6 +106,9 @@ pub struct App {
     pub frame_advance: bool,
     /// Hide `OVERSCAN_PIXELS` on every edge.
     pub crop_enabled: bool,
+    /// Wide view mode; `wide_dirty` asks the frontend to resize.
+    pub wide: WideMode,
+    pub wide_dirty: bool,
     /// Set by `toggle_crop`; the main loop clears it after resizing the
     /// window and recreating its source rectangle.
     pub crop_dirty: bool,
@@ -136,6 +179,8 @@ impl App {
             frame_advance: false,
             crop_enabled,
             crop_dirty: false,
+            wide: WideMode::Off,
+            wide_dirty: false,
             quit_requested: false,
             osd_until: None,
             now_ms: 0,
@@ -494,13 +539,90 @@ impl App {
         }
     }
 
-    /// Visible picture size in NES pixels after cropping.
+    /// Extra background columns shown on each side in the current wide
+    /// mode (0 when off). The height is the cropped height: the overscan
+    /// crop still applies vertically in wide mode.
+    pub fn wide_ext(&self) -> u32 {
+        let h = SCREEN_HEIGHT as u32 - 2 * self.crop();
+        match self.wide {
+            WideMode::Off => 0,
+            // Width for 16:9 at the 8:7 pixel aspect: h * 16/9 * 7/8.
+            WideMode::Wide16x9 => {
+                let width = (h * 14).div_ceil(9);
+                (width.saturating_sub(SCREEN_WIDTH as u32))
+                    .div_ceil(2)
+                    .min(WIDE_EXT as u32)
+            }
+            WideMode::Max => WIDE_EXT as u32,
+        }
+    }
+
+    /// Visible picture size in NES pixels after cropping and the wide
+    /// extension. In wide mode the horizontal crop is not applied: the
+    /// picture's edge columns sit in the middle of the image.
     pub fn visible_size(&self) -> (u32, u32) {
         let crop = self.crop();
-        (
-            SCREEN_WIDTH as u32 - 2 * crop,
-            SCREEN_HEIGHT as u32 - 2 * crop,
-        )
+        let ext = self.wide_ext();
+        let width = if ext > 0 {
+            SCREEN_WIDTH as u32 + 2 * ext
+        } else {
+            SCREEN_WIDTH as u32 - 2 * crop
+        };
+        (width, SCREEN_HEIGHT as u32 - 2 * crop)
+    }
+
+    /// Width of the frame buffer the frontend should present: the wide
+    /// buffer when a wide mode is on, else the picture.
+    pub fn frame_width(&self) -> u32 {
+        if self.wide == WideMode::Off {
+            SCREEN_WIDTH as u32
+        } else {
+            WIDE_WIDTH as u32
+        }
+    }
+
+    /// The rectangle of that frame buffer to show: `(x, y, w, h)`.
+    pub fn picture_rect(&self) -> (u32, u32, u32, u32) {
+        let crop = self.crop();
+        let (w, h) = self.visible_size();
+        let x = if self.wide == WideMode::Off {
+            crop
+        } else {
+            WIDE_EXT as u32 - self.wide_ext()
+        };
+        (x, crop, w, h)
+    }
+
+    /// Switch wide mode, resizing the frontend and starting or stopping the
+    /// PPU's strip renderer.
+    pub fn set_wide(&mut self, mode: WideMode) {
+        self.wide = mode;
+        self.wide_dirty = true;
+        self.system.set_wide_enabled(mode != WideMode::Off);
+        let ext = self.wide_ext();
+        self.show_message(match mode {
+            WideMode::Off => "Wide view off".to_string(),
+            _ => format!(
+                "Wide view {} (+{} px each side, background only)",
+                mode.label(),
+                ext
+            ),
+        });
+    }
+
+    pub fn toggle_wide(&mut self) {
+        self.set_wide(self.wide.next());
+    }
+
+    /// `wide` cycles modes; `wide off|16:9|max` picks one.
+    pub fn wide_command(&mut self, arg: &str) {
+        if arg.trim().is_empty() {
+            self.toggle_wide();
+        } else if let Some(mode) = WideMode::parse(arg) {
+            self.set_wide(mode);
+        } else {
+            self.show_message("Usage: wide [off|16:9|max]");
+        }
     }
 
     pub fn is_muted(&self) -> bool {

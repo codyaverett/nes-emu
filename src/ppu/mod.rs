@@ -32,6 +32,8 @@ pub struct LineScroll {
     pub bg_table_hi: bool,
     /// PPUMASK bit 3: background enabled.
     pub show_bg: bool,
+    /// PPUMASK bit 1: background shown in the leftmost 8 columns.
+    pub show_bg_left: bool,
     /// True once this line's scroll was captured with rendering on; false
     /// means the line renders the backdrop colour only.
     pub captured: bool,
@@ -773,10 +775,22 @@ impl Ppu {
                 x: self.x,
                 bg_table_hi: self.ctrl.contains(PpuCtrl::BG_PATTERN),
                 show_bg: self.mask.contains(PpuMask::SHOW_BG),
+                show_bg_left: self.mask.contains(PpuMask::SHOW_BG_LEFT),
                 captured: rendering_enabled,
             };
             if self.wide_enabled {
                 self.render_wide_line(line, mapper);
+            }
+        }
+        // The picture line just finished (dots 1-256) goes into the middle
+        // of the wide frame. When the game masks the leftmost 8 columns
+        // they would sit as a dark bar between the left strip and the
+        // picture, so they are drawn from the nametable like the strips.
+        if self.cycle == 320 && self.scanline < 240 && self.wide_enabled {
+            let line = self.scanline as usize;
+            self.copy_wide_centre_line(line);
+            if !self.line_scroll[line].show_bg_left {
+                self.render_wide_columns(line, 0..8, mapper);
             }
         }
 
@@ -793,9 +807,6 @@ impl Ppu {
             if self.scanline > 261 {
                 self.scanline = 0;
                 self.frame += 1;
-            }
-            if self.scanline == 240 && self.wide_enabled {
-                self.copy_wide_centre();
             }
         }
     }
@@ -825,11 +836,15 @@ impl Ppu {
 
     fn copy_wide_centre(&mut self) {
         for y in 0..SCREEN_HEIGHT {
-            let src = y * SCREEN_WIDTH * 3;
-            let dst = (y * WIDE_WIDTH + WIDE_EXT) * 3;
-            self.wide_buffer[dst..dst + SCREEN_WIDTH * 3]
-                .copy_from_slice(&self.frame_buffer[src..src + SCREEN_WIDTH * 3]);
+            self.copy_wide_centre_line(y);
         }
+    }
+
+    fn copy_wide_centre_line(&mut self, y: usize) {
+        let src = y * SCREEN_WIDTH * 3;
+        let dst = (y * WIDE_WIDTH + WIDE_EXT) * 3;
+        self.wide_buffer[dst..dst + SCREEN_WIDTH * 3]
+            .copy_from_slice(&self.frame_buffer[src..src + SCREEN_WIDTH * 3]);
     }
 
     /// Draw the `WIDE_EXT` background columns left and right of line `y`
@@ -838,6 +853,22 @@ impl Ppu {
     /// and pattern reads through `Mapper::ppu_peek`, so bank latches and
     /// the MMC3 A12 counter never see these fetches.
     fn render_wide_line(&mut self, y: usize, mapper: &dyn Mapper) {
+        self.render_wide_columns(y, -(WIDE_EXT as i32)..0, mapper);
+        self.render_wide_columns(
+            y,
+            SCREEN_WIDTH as i32..(SCREEN_WIDTH + WIDE_EXT) as i32,
+            mapper,
+        );
+    }
+
+    /// Draw background columns `px` (picture coordinates, negative for the
+    /// left strip) of line `y` into the wide buffer from the nametable.
+    fn render_wide_columns(
+        &mut self,
+        y: usize,
+        px_range: std::ops::Range<i32>,
+        mapper: &dyn Mapper,
+    ) {
         let ls = self.line_scroll[y];
         let backdrop = self.get_color_from_palette(0);
         let mirroring = mapper.mirroring();
@@ -856,9 +887,7 @@ impl Ppu {
         };
 
         let mut buf = std::mem::take(&mut self.wide_buffer);
-        let strips =
-            (-(WIDE_EXT as i32)..0).chain(SCREEN_WIDTH as i32..(SCREEN_WIDTH + WIDE_EXT) as i32);
-        for px in strips {
+        for px in px_range {
             if !(ls.captured && ls.show_bg) {
                 draw(px, &mut buf, backdrop);
                 continue;
@@ -2387,14 +2416,20 @@ mod wide_tests {
             ppu.frame_buffer, before,
             "wide mode must not change the picture"
         );
-        // Centre of the wide buffer is the picture.
+        // Centre of the wide buffer is the picture, except the masked
+        // leftmost 8 columns (PPUMASK bit 1 clear here), which are drawn
+        // from the nametable instead of the dark bar the picture shows.
         let y = 100;
         let centre =
             &ppu.get_wide_frame_buffer()[(y * WIDE_WIDTH + WIDE_EXT) * 3..][..SCREEN_WIDTH * 3];
         assert_eq!(
-            centre,
-            &ppu.frame_buffer[y * SCREEN_WIDTH * 3..][..SCREEN_WIDTH * 3]
+            &centre[8 * 3..],
+            &ppu.frame_buffer[y * SCREEN_WIDTH * 3 + 8 * 3..][..SCREEN_WIDTH * 3 - 8 * 3]
         );
+        let c1 = NES_PALETTE[0x16];
+        for px in 0..8 {
+            assert_eq!(wide_pixel(&ppu, px, y), c1, "patched column {px}");
+        }
     }
 
     #[test]

@@ -22,3 +22,22 @@ Plan: docs/plans/WIDESCREEN.md.
 - Probe results for other games (nametable-level, before the renderer
   existed): Contra 96% valid at 59 px right; River City Ransom about 30%
   (draws columns just in time), motivating the Phase 4 fallback.
+
+## Phase 2: SDL toggle (#65)
+
+- `WideMode` lives on `App`; W and the `wide` palette command cycle
+  off, 16:9, max. `wide_dirty` is handled next to `crop_dirty`.
+- The SDL texture is always `WIDE_WIDTH` wide. With the view off only the
+  picture is uploaded into the middle and the source rectangle is offset
+  by `WIDE_EXT`; the 15 UI screenshot hashes stayed identical except the
+  two help pages, which now list W.
+- In wide mode the overscan crop applies vertically only: the picture's
+  edge columns sit in the middle of the image, so cropping them would
+  cut a hole. Games that mask the leftmost 8 columns would leave a dark
+  bar there; those columns are redrawn from the nametable at dot 320.
+- Reference capture: `docs/testing/test_output/wide/smb_title_16x9.png`
+  (SMB title, 16:9, window 1050x672). The right strip shows a question
+  block outside the native picture.
+- Environment: Homebrew `sdl2` is now sdl2-compat over SDL3. The debug
+  binary once aborted in the sdl2 crate on event type 0x207 (an SDL3
+  window event); the release binary did not. Not caused by this work.

@@ -208,8 +208,9 @@ impl Emulator {
     /// overlay after an overscan crop change.
     pub fn tick(&mut self) {
         self.ui.tick(&mut self.app);
-        if self.app.crop_dirty {
+        if self.app.crop_dirty || self.app.wide_dirty {
             self.app.crop_dirty = false;
+            self.app.wide_dirty = false;
             let (w, h) = self.app.visible_size();
             let (ow, oh) = ui::overlay_size(w, h);
             self.painter.resize(ow, oh);
