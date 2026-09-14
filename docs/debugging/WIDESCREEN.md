@@ -82,3 +82,48 @@ Plan: docs/plans/WIDESCREEN.md.
   scripts. Not verified: how the wide picture looks with a real ROM in
   the browser (the strips are the SDL renderer's, see Phase 2) and the
   button on an actual touch device.
+
+## Phase 4: stale-column fallback and profiles (#67)
+
+- The fallback keeps, per absolute tile column, the frame it was last
+  visible, and per strip column the frame of the last `$2007` write on a
+  playfield row. A never-seen column whose strip memory was shown as the
+  column 512 px back, with no write since, is stale and draws the
+  backdrop. Everything else draws live.
+- Two approaches were tried and rejected on the SMB accuracy test
+  (`tests/widescreen.rs`, 94.6% with the fallback off):
+  - Comparing live tiles against the previous occupant's: 60%. Level
+    columns repeat (every all-sky column is identical), so fresh data
+    looked stale.
+  - Remembering rendered pixels and drawing them when a seen column's
+    tiles changed: 66%. SMB's boot slides the scroll from 255 to 0 in
+    16 px steps, so columns 256 and up were "seen" holding pre-title
+    memory; the title screen redrawn in place then read as changed and
+    got boot-era pixels. Games redraw scenes in place without moving the
+    scroll, so live memory wins whenever a column has been seen.
+  - The final rule scores 94.6%, the same as no fallback, on SMB (which
+    never shows stale columns at 59 px) while blanking the just-in-time
+    columns of games like River City Ransom.
+- Positions are absolute strip coordinates (the strip's own tile grid,
+  extended without wrapping). Aligning tile columns to the world's
+  8-pixel grid instead was off by one column whenever the scroll was not
+  a multiple of 8.
+- `WideProfile::for_crc` holds per-game HUD rows; SMB (both common dumps,
+  CRC 8E2BD25C and D26EFD78) blanks lines 0-31. Status-bar writes are
+  ignored for the write stamps so score updates do not certify columns.
+- `Ppu::set_wide_fallback(false)` draws every column live; the mid-frame
+  scroll unit test uses it because its nametables were filled directly,
+  not through `$2007`.
+- Not done: horizontal-mirroring games get backdrop strips (the
+  neighbouring memory is the same screen); a settings store for the mode
+  to survive restarts does not exist yet.
+- Known limitation: SMB's attract demo scrolls the title logo off to the
+  left without clearing it. Those columns were legitimately on screen at
+  that position, so the rule keeps them live and the left strip shows
+  logo remains during the demo. A game started with Start clears the
+  nametables first and is clean (`docs/testing/test_output/wide/smb_1-1_max.png`,
+  384x240 native wide frame at world x 276, rendered headlessly).
+- The SDL `--ui-script` Return key did not start SMB in two attempts
+  (the headless harness with `controller1.press(START)` does); the
+  in-level reference was therefore rendered from `get_wide_frame_buffer`
+  rather than captured from the window. Not investigated further.

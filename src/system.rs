@@ -255,6 +255,7 @@ impl System {
     pub fn load_cartridge(&mut self, cartridge: Cartridge) {
         // Pattern tables and mirroring are served by the cartridge mapper on
         // every PPU access, so nothing is copied into the PPU here.
+        self.ppu.wide_profile = crate::ppu::WideProfile::for_crc(cartridge.rom_crc32);
         self.cartridge = Some(cartridge);
         self.battery_saved_hash.set(None);
         self.reset();

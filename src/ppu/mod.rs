@@ -98,6 +98,10 @@ impl _Sprite {
 /// decays to 0. Hardware takes roughly 600 ms (36 NTSC frames); blargg's
 /// ppu_open_bus expects the value intact immediately after a write and gone
 /// after about a second.
+pub mod wide;
+
+pub use wide::{WideCache, WideProfile};
+
 pub const IO_BUS_DECAY_FRAMES: u64 = 36;
 
 pub struct Ppu {
@@ -140,6 +144,11 @@ pub struct Ppu {
     /// `WIDE_WIDTH` x `SCREEN_HEIGHT` RGB, valid only while `wide_enabled`.
     /// Heap allocated so the by-value `Ppu` does not grow.
     wide_buffer: Vec<u8>,
+    /// Stale-column detection and remembered columns (`wide.rs`).
+    wide_cache: Option<Box<WideCache>>,
+    wide_fallback: bool,
+    /// Per-game adjustments; set by `System::load_cartridge`.
+    pub wide_profile: WideProfile,
     /// Rising edge of the NMI output line, held until the CPU samples it.
     /// The line itself is `VBLANK_STARTED && NMI_ENABLE`; if the line drops
     /// again before the CPU has sampled the edge (a `$2002` read or an NMI
@@ -230,6 +239,9 @@ impl Ppu {
             line_scroll: [LineScroll::default(); SCREEN_HEIGHT],
             wide_enabled: false,
             wide_buffer: Vec::new(),
+            wide_cache: None,
+            wide_fallback: true,
+            wide_profile: WideProfile::default(),
             nmi_interrupt: false,
             nmi_line: false,
             suppress_vbl: false,
@@ -615,6 +627,7 @@ impl Ppu {
             0x2000..=0x2FFF => {
                 let index = self.mirror_nametable_addr(addr, mapper.mirroring());
                 self.nametable_ram[index as usize] = value;
+                self.note_wide_write(addr);
             }
             0x3000..=0x3EFF => {
                 // Mirror of 0x2000-0x2EFF
@@ -808,6 +821,42 @@ impl Ppu {
                 self.scanline = 0;
                 self.frame += 1;
             }
+            if self.scanline == 240 && self.wide_enabled {
+                self.update_wide_cache();
+            }
+        }
+    }
+
+    /// Stamp a nametable write for the stale-column cache, unless it lands
+    /// in the profile's status-bar rows or the attribute table.
+    fn note_wide_write(&mut self, addr: u16) {
+        let Some(cache) = self.wide_cache.as_mut() else {
+            return;
+        };
+        let row = (addr >> 5) & 0x1F;
+        if row >= wide::ROWS as u16 {
+            return;
+        }
+        let line = row * 8;
+        if line < self.wide_profile.hud_top
+            || line >= SCREEN_HEIGHT as u16 - self.wide_profile.hud_bottom
+        {
+            return;
+        }
+        let strip_col = ((addr >> 10) & 1) * 32 + (addr & 0x1F);
+        cache.note_write(strip_col);
+    }
+
+    /// Whether the stale-column fallback runs; off draws every strip column
+    /// live. On by default.
+    pub fn set_wide_fallback(&mut self, on: bool) {
+        self.wide_fallback = on;
+    }
+
+    /// Feed the finished frame to the stale-column cache.
+    fn update_wide_cache(&mut self) {
+        if let Some(cache) = self.wide_cache.as_mut() {
+            cache.end_of_frame(&self.line_scroll);
         }
     }
 
@@ -824,6 +873,14 @@ impl Ppu {
         if on && self.wide_buffer.len() != WIDE_WIDTH * SCREEN_HEIGHT * 3 {
             self.wide_buffer = vec![0; WIDE_WIDTH * SCREEN_HEIGHT * 3];
             self.copy_wide_centre();
+        }
+        if on && self.wide_cache.is_none() {
+            self.wide_cache = Some(Box::new(WideCache::new()));
+        }
+        if !on {
+            // Drop the cache: a later enable starts fresh, and memory is
+            // not held while the view is off.
+            self.wide_cache = None;
         }
     }
 
@@ -872,6 +929,17 @@ impl Ppu {
         let ls = self.line_scroll[y];
         let backdrop = self.get_color_from_palette(0);
         let mirroring = mapper.mirroring();
+        // Only side-by-side nametables give the strips real neighbours;
+        // status-bar lines have no meaningful extension either.
+        let side_by_side = matches!(mirroring, Mirroring::Vertical | Mirroring::FourScreen);
+        let hud = (y as u16) < self.wide_profile.hud_top
+            || (y as u16) >= SCREEN_HEIGHT as u16 - self.wide_profile.hud_bottom;
+        let usable = ls.captured && ls.show_bg && side_by_side && !hud;
+        let line_world = self
+            .wide_cache
+            .as_ref()
+            .filter(|_| self.wide_fallback)
+            .map(|c| c.line_world(&ls));
         let table: u16 = if ls.bg_table_hi { 0x1000 } else { 0x0000 };
         let scroll_x = (((ls.v >> 10) & 1) * 256 + (ls.v & 0x1F) * 8) as i32 + ls.x as i32;
         let coarse_y = (ls.v >> 5) & 0x1F;
@@ -887,13 +955,30 @@ impl Ppu {
         };
 
         let mut buf = std::mem::take(&mut self.wide_buffer);
+        let mut decided: Option<(i64, wide::Decision)> = None;
         for px in px_range {
-            if !(ls.captured && ls.show_bg) {
+            if !usable {
                 draw(px, &mut buf, backdrop);
                 continue;
             }
             let world = (scroll_x + px).rem_euclid(512) as u16;
             let column = world / 8;
+            // Stale-column check, once per tile column (Phase 4).
+            if let (Some(cache), Some(lw)) = (self.wide_cache.as_ref(), line_world) {
+                let tw = (lw + px as i64).div_euclid(8);
+                let decision = match decided {
+                    Some((t, d)) if t == tw => d,
+                    _ => {
+                        let d = cache.decide(tw);
+                        decided = Some((tw, d));
+                        d
+                    }
+                };
+                if decision == wide::Decision::Stale {
+                    draw(px, &mut buf, backdrop);
+                    continue;
+                }
+            }
             let nt_h = ((column / 32) & 1) << 10;
             let coarse_x = column % 32;
             let nt_addr = 0x2000 | nt_v | nt_h | (coarse_y << 5) | coarse_x;
@@ -2475,6 +2560,10 @@ mod wide_tests {
     fn mid_frame_scroll_change_applies_from_the_next_line() {
         let (mut ppu, mut m) = ppu_with_strip();
         ppu.set_wide_enabled(true);
+        // The nametables were filled directly, never written through $2007,
+        // so the stale-column fallback would (correctly) blank the columns
+        // this test inspects; it checks scroll timing, not staleness.
+        ppu.set_wide_fallback(false);
         ppu.write_register(0x2001, 0x08, m.as_mut());
         set_scroll(&mut ppu, m.as_mut(), 0, 0);
         run_frame(&mut ppu, m.as_mut());
