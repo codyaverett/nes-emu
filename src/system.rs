@@ -3185,6 +3185,21 @@ impl System {
         (hi << 8) | lo
     }
 
+    /// Turn the wide background view on or off (docs/plans/WIDESCREEN.md).
+    pub fn set_wide_enabled(&mut self, on: bool) {
+        self.ppu.set_wide_enabled(on);
+    }
+
+    pub fn wide_enabled(&self) -> bool {
+        self.ppu.wide_enabled
+    }
+
+    /// `ppu::WIDE_WIDTH` x `ppu::SCREEN_HEIGHT` RGB; empty while the wide
+    /// view is off.
+    pub fn get_wide_frame_buffer(&self) -> &[u8] {
+        self.ppu.get_wide_frame_buffer()
+    }
+
     pub fn get_frame_buffer(&self) -> &[u8] {
         self.ppu.get_frame_buffer()
     }
