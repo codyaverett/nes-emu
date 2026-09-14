@@ -146,7 +146,7 @@ impl Emulator {
         } else {
             self.app.system.get_wide_frame_buffer()
         };
-        for (i, px) in rgb.chunks_exact(3).take(pixels).enumerate() {
+        for (i, px) in rgb.as_chunks::<3>().0.iter().take(pixels).enumerate() {
             self.rgba[i * 4..i * 4 + 3].copy_from_slice(px);
             self.rgba[i * 4 + 3] = 0xFF;
         }
