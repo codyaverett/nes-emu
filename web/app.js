@@ -17,6 +17,13 @@
 // emu.overlay_rgba, and the page mirrors pause, mute, volume, crop and
 // slot from the core into its controls once per tick. Slot and cheat
 // writes made by the UI reach IndexedDB through the dirty flags.
+//
+// Picture geometry comes from the core too (docs/plans/WIDESCREEN.md):
+// emu.frame_width x emu.frame_height is the ImageData, emu.picture_rect
+// the part of it the canvas shows (overscan crop, wide view extension),
+// and emu.take_layout_dirty says when to resize. Once a ROM is loaded
+// every size comes from the core; DEFAULT_PICTURE only sizes the
+// placeholder before that.
 import init, { Emulator, Button, core_version } from "./pkg/nes_emu_web.js";
 import { openStore, crcKey, SLOTS } from "./storage.js";
 
@@ -28,9 +35,9 @@ const SAMPLE_RATE = 44100;
 // (AUDIO_TARGET_SAMPLES in src/main.rs).
 const AUDIO_TARGET = 2450;
 const MAX_FRAMES_PER_TICK = 4;
-const OVERSCAN = 8;
-const FRAME_W = 256;
-const FRAME_H = 240;
+// Canvas size before a ROM is loaded (the core's crop-on default); once
+// an Emulator exists every size comes from it.
+const DEFAULT_PICTURE = { x: 8, y: 8, w: 240, h: 224, fw: 256, fh: 240 };
 
 const KEYS = {
   KeyZ: [0, Button.A],
@@ -75,6 +82,7 @@ const stats = {
   muted: false,
   volume: 1,
   crop: true,
+  wide: "off", // wide view mode label from the core: off, 16:9, max
   error: null,
   crc: null, // eight hex digits, the store key
   slot: 1,
@@ -91,7 +99,8 @@ window.nesStats = stats;
 
 let emu = null;
 let store = null; // storage.js API, opened at boot (null if IndexedDB failed)
-let image = new ImageData(FRAME_W, FRAME_H);
+let image = new ImageData(DEFAULT_PICTURE.fw, DEFAULT_PICTURE.fh);
+let picture = { ...DEFAULT_PICTURE }; // the rectangle of `image` the canvas shows
 let overlayImage = null; // ImageData sized to emu.overlay_size()
 let overlayShown = false; // the overlay canvas has content to clear
 
@@ -177,19 +186,43 @@ function clearAudio() {
 // ---------------------------------------------------------------- video
 
 function present() {
-  image.data.set(emu.frame_rgba());
-  const off = stats.crop ? -OVERSCAN : 0;
-  ctx2d.putImageData(image, off, off);
+  const px = emu.frame_rgba();
+  // A wide or crop change not yet mirrored (ordering slip): resize first.
+  if (px.length !== image.data.length) {
+    applyLayout();
+    return;
+  }
+  image.data.set(px);
+  ctx2d.putImageData(image, -picture.x, -picture.y);
 }
 
-/** Size the canvases for the crop state; the core is the source of
- *  truth (emu.crop_enabled), this only mirrors it into the DOM. */
-function applyCrop(crop) {
-  stats.crop = crop;
-  canvas.width = crop ? FRAME_W - 2 * OVERSCAN : FRAME_W;
-  canvas.height = crop ? FRAME_H - 2 * OVERSCAN : FRAME_H;
-  wrap.classList.toggle("full-frame", !crop);
-  $("btn-crop").textContent = crop ? "Full frame" : "Crop overscan";
+/** Size the canvases and the CSS box from the core's picture geometry
+ *  (frame_width/height, picture_rect, overlay_size); the core is the
+ *  source of truth for the crop and wide state, this only mirrors it
+ *  into the DOM. Before a ROM is loaded the crop-on default applies. */
+function applyLayout() {
+  if (emu) {
+    const [x, y, w, h] = emu.picture_rect();
+    picture = { x, y, w, h, fw: emu.frame_width(), fh: emu.frame_height() };
+    stats.crop = emu.crop_enabled();
+    stats.wide = emu.wide_mode();
+  } else {
+    picture = { ...DEFAULT_PICTURE };
+    stats.crop = true;
+    stats.wide = "off";
+  }
+  if (image.width !== picture.fw || image.height !== picture.fh) {
+    image = new ImageData(picture.fw, picture.fh);
+  }
+  if (canvas.width !== picture.w || canvas.height !== picture.h) {
+    canvas.width = picture.w;
+    canvas.height = picture.h;
+  }
+  wrap.style.setProperty("--pw", picture.w);
+  wrap.style.setProperty("--ph", picture.h);
+  wrap.style.aspectRatio = `${picture.w} / ${picture.h}`;
+  $("btn-crop").textContent = stats.crop ? "Full frame" : "Crop overscan";
+  $("btn-wide").textContent = stats.wide === "off" ? "Wide" : `Wide ${stats.wide}`;
   if (emu) {
     const [w, h] = emu.overlay_size();
     if (overlay.width !== w || overlay.height !== h) {
@@ -203,8 +236,17 @@ function applyCrop(crop) {
 }
 
 function setCrop(crop) {
-  if (emu) emu.set_crop(crop);
-  else applyCrop(crop);
+  if (emu) {
+    emu.set_crop(crop);
+    syncControls();
+  } else {
+    applyLayout();
+  }
+}
+
+/** The Wide button: the same path as the W key (off, 16:9, max). */
+function toggleWide() {
+  if (emu) keyDown("KeyW");
 }
 
 /** Draw the shared overlay (palette, pages, toasts, the volume bar)
@@ -252,8 +294,8 @@ function syncControls() {
     if (audio.gain) audio.gain.gain.value = muted ? 0 : volume;
     $("btn-mute").textContent = muted ? "Unmute" : "Mute";
   }
-  const crop = emu.crop_enabled();
-  if (crop !== stats.crop) applyCrop(crop);
+  // Crop and wide changes (buttons, W, the palette) resize the canvases.
+  if (emu.take_layout_dirty()) applyLayout();
   const slot = emu.slot();
   if (slot !== stats.slot) {
     stats.slot = slot;
@@ -394,7 +436,8 @@ async function loadRomFile(file) {
   stats.rewinding = false;
   overlayShown = true; // force one clear of whatever the last ROM drew
   $("btn-pause").textContent = "Pause";
-  applyCrop(emu.crop_enabled());
+  emu.take_layout_dirty();
+  applyLayout();
   if (audio.gain) audio.gain.gain.value = emu.muted() ? 0 : emu.volume();
   clearAudio();
   gate.hidden = true;
@@ -923,6 +966,7 @@ $("btn-reset").addEventListener("click", reset);
 $("btn-pause").addEventListener("click", () => setPaused(!stats.paused));
 $("btn-mute").addEventListener("click", () => setMuted(!stats.muted));
 $("btn-crop").addEventListener("click", () => setCrop(!stats.crop));
+$("btn-wide").addEventListener("click", toggleWide);
 $("btn-full").addEventListener("click", toggleFullscreen);
 // Buttons must not keep focus, or Enter/Space would re-trigger them.
 for (const b of document.querySelectorAll("button")) {
@@ -973,6 +1017,12 @@ window.nesApp = {
     return h.toString(16).padStart(8, "0");
   },
   setPaused,
+  setCrop,
+  toggleWide,
+  /** The picture geometry the canvas is sized from (docs/plans/WIDESCREEN.md). */
+  get picture() {
+    return { ...picture, canvasWidth: canvas.width, canvasHeight: canvas.height };
+  },
   // Shared UI hooks (docs/plans/SHARED_OVERLAY_UI.md).
   keyDown,
   keyUp,
@@ -1007,7 +1057,7 @@ window.nesApp = {
 
 await init();
 stats.core = core_version();
-applyCrop(true);
+applyLayout();
 try {
   store = await openStore();
   window.nesStore = store;

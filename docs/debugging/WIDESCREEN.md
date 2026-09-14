@@ -41,3 +41,44 @@ Plan: docs/plans/WIDESCREEN.md.
 - Environment: Homebrew `sdl2` is now sdl2-compat over SDL3. The debug
   binary once aborted in the sdl2 crate on event type 0x207 (an SDL3
   window event); the release binary did not. Not caused by this work.
+
+## Phase 3: web page (#66)
+
+- The wasm `Emulator` presents the core's geometry, not literals:
+  `frame_width()` (256, or 384 while wide is on), `frame_height()`,
+  `picture_rect()` as `[x, y, w, h]` from `App::picture_rect`,
+  `wide_mode()` (the label) and `toggle_wide()` for the button.
+  `frame_rgba()` converts `get_wide_frame_buffer` (384x240) when a wide
+  mode is on and the picture otherwise; `self.rgba` is reallocated when
+  the width changes.
+- `take_layout_dirty()` is true once after construction and after every
+  crop or wide change. It runs the pending overlay resize itself, so the
+  page reads consistent `overlay_size` and `picture_rect` whether or not
+  `tick` ran first. `syncControls` polls it once per tick and calls
+  `applyLayout`, which sizes the `ImageData` at frame size, the canvas
+  at the picture rect and draws with `putImageData(image, -x, -y)`.
+  `present` also resizes if the RGBA length and the `ImageData` ever
+  disagree, so a missed flag cannot throw a RangeError.
+- `#screen-wrap` takes `--pw`/`--ph` custom properties (set from the
+  picture rect) for both `aspect-ratio` and the viewport-fit `width`
+  rule; the `.full-frame` class is gone. A "Wide" button next to "Full
+  frame" sends `KeyW` through the page's `keyDown`, the same path as the
+  keyboard, so touch users can cycle the modes.
+- Verified headless by `web/test/smoke.mjs` (Node build) and the crate's
+  unit tests: with the default crop, W gives 16:9 with rect
+  `[17, 8, 350, 224]`, overlay 1050x672 (matching the Phase 2 SDL
+  window) and a 384x240x4 opaque frame; crop off gives `[5, 0, 374, 240]`
+  and overlay 1122x720; max gives `[0, 0, 384, 240]` and 1152x720; off
+  again restores `frame_width` 256 and `[0, 0, 256, 240]`.
+- Also checked once in headless Chromium (Playwright, a throwaway
+  script driving `window.nesLoadRom`, the Wide button's `click()`,
+  `nesApp.keyDown("KeyW")` and `nesApp.setCrop`) at a 1280x900
+  viewport: no page errors; `canvas.width`/`height` equalled the rect
+  at every step (240x224, 350x224, 374x240, 384x240, 256x240, 240x224),
+  the computed `aspect-ratio` followed (`350 / 224` and so on), the box
+  kept its 680 px height and widened from 729 to 1063 (16:9) and 1088
+  (max) px, and the button read "Wide", "Wide 16:9", "Wide max".
+  `window.nesApp.picture` exposes the rect and canvas size for such
+  scripts. Not verified: how the wide picture looks with a real ROM in
+  the browser (the strips are the SDL renderer's, see Phase 2) and the
+  button on an actual touch device.

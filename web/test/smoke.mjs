@@ -113,6 +113,59 @@ emu.osd_message("hello from the page");
 assert.equal(emu.osd_text(), "hello from the page");
 assert.equal(emu.take_cheats_dirty(), false);
 
+// Wide view (issue #66, docs/plans/WIDESCREEN.md): the W key widens the
+// frame to 384 columns and the picture rect to 256 + 2 * ext; the page
+// sizes its canvases from these numbers. The layout flag is raised once
+// per change. Crop is on by default (8 px each edge, 224 lines).
+assert.equal(emu.take_layout_dirty(), true, "layout dirty once after construction");
+assert.equal(emu.take_layout_dirty(), false);
+assert.equal(emu.wide_mode(), "off");
+assert.equal(emu.crop_enabled(), true);
+assert.deepEqual(Array.from(emu.picture_rect()), [8, 8, 240, 224]);
+
+assert.equal(emu.key_down("KeyW"), true, "W is the core's hotkey");
+assert.equal(emu.wide_mode(), "16:9");
+emu.tick();
+assert.equal(emu.take_layout_dirty(), true, "wide change raises the layout flag");
+assert.equal(emu.take_layout_dirty(), false);
+assert.equal(emu.frame_width(), 384);
+assert.equal(emu.frame_height(), 240);
+// 16:9 at 224 lines: 47 extra columns per side.
+assert.deepEqual(Array.from(emu.picture_rect()), [17, 8, 350, 224]);
+assert.deepEqual(Array.from(emu.overlay_size()), [1050, 672], "overlay is visible_size * 3");
+emu.run_frame();
+emu.take_audio();
+const wideFrame = emu.frame_rgba();
+assert.equal(wideFrame.length, 384 * 240 * 4);
+for (let i = 3; i < wideFrame.length; i += 4) assert.equal(wideFrame[i], 255);
+assert.match(emu.osd_text(), /Wide view 16:9/);
+
+// Crop off: 59 per side at 240 lines.
+emu.set_crop(false);
+assert.equal(emu.take_layout_dirty(), true, "crop change raises the layout flag");
+assert.deepEqual(Array.from(emu.picture_rect()), [5, 0, 374, 240]);
+assert.deepEqual(Array.from(emu.overlay_size()), [1122, 720]);
+
+// Max: the whole 384-wide buffer.
+assert.equal(emu.key_down("KeyW"), true);
+assert.equal(emu.wide_mode(), "max");
+assert.equal(emu.take_layout_dirty(), true);
+assert.deepEqual(Array.from(emu.picture_rect()), [0, 0, 384, 240]);
+assert.deepEqual(Array.from(emu.overlay_size()), [1152, 720]);
+assert.equal(emu.frame_rgba().length, 384 * 240 * 4);
+
+// Off again restores the 256-wide picture; the button uses toggle_wide.
+emu.toggle_wide();
+assert.equal(emu.wide_mode(), "off");
+assert.equal(emu.take_layout_dirty(), true);
+assert.equal(emu.frame_width(), 256);
+assert.deepEqual(Array.from(emu.picture_rect()), [0, 0, 256, 240]);
+assert.deepEqual(Array.from(emu.overlay_size()), [768, 720]);
+assert.equal(emu.frame_rgba().length, 256 * 240 * 4);
+emu.set_crop(true);
+assert.equal(emu.take_layout_dirty(), true);
+assert.deepEqual(Array.from(emu.picture_rect()), [8, 8, 240, 224]);
+
 emu.free();
 console.log(
   `smoke ok: 60 frames in ${elapsed.toFixed(1)} ms ` +

@@ -13,13 +13,16 @@
     padding: 16px; min-height: 100vh; box-sizing: border-box;
   }
   h1 { font-size: 18px; margin: 0; }
+  /* The picture size in NES pixels; app.js sets --pw and --ph from the
+     core's picture_rect (overscan crop, wide view) so the box keeps the
+     picture's aspect and fits the viewport either way. */
   #screen-wrap {
+    --pw: 240; --ph: 224;
     position: relative; background: #000;
-    width: min(96vw, calc((100vh - 220px) * 240 / 224));
-    aspect-ratio: 240 / 224;
+    width: min(96vw, calc((100vh - 220px) * var(--pw) / var(--ph)));
+    aspect-ratio: var(--pw) / var(--ph);
     outline: 1px solid #333;
   }
-  #screen-wrap.full-frame { aspect-ratio: 256 / 240; }
   canvas {
     width: 100%; height: 100%; display: block;
     image-rendering: pixelated; image-rendering: crisp-edges;
@@ -93,13 +96,14 @@
   <button id="btn-pause" title="P">Pause</button>
   <button id="btn-mute" title="M">Mute</button>
   <button id="btn-crop" title="Toggle the 8 pixel overscan crop">Full frame</button>
+  <button id="btn-wide" title="W: wide view off / 16:9 / max (background only)">Wide</button>
   <button id="btn-full" title="F">Fullscreen</button>
 </div>
 <div id="stats">no ROM loaded</div>
 <div id="keys">
   Player 1: <kbd>Z</kbd> A, <kbd>X</kbd> B, <kbd>Right Shift</kbd> Select, <kbd>Enter</kbd> Start, arrows.
   Player 2: <kbd>'</kbd> A, <kbd>;</kbd> B, <kbd>,</kbd> Select, <kbd>.</kbd> Start, <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd>.
-  <kbd>R</kbd> reset, <kbd>P</kbd> pause, <kbd>N</kbd> frame advance, <kbd>M</kbd> mute, <kbd>+</kbd>/<kbd>-</kbd> volume, <kbd>F</kbd> fullscreen.
+  <kbd>R</kbd> reset, <kbd>P</kbd> pause, <kbd>N</kbd> frame advance, <kbd>M</kbd> mute, <kbd>+</kbd>/<kbd>-</kbd> volume, <kbd>W</kbd> wide view, <kbd>F</kbd> fullscreen.
   <kbd>F5</kbd> save state, <kbd>F8</kbd> load state, <kbd>F6</kbd>/<kbd>F7</kbd> change slot, hold <kbd>Backspace</kbd> to rewind.
   <kbd>`</kbd> command palette (cheats, memory, ppu, apu, states pages), <kbd>F1</kbd> help.
 </div>

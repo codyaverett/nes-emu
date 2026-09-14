@@ -21,9 +21,9 @@ use std::sync::{Arc, Mutex};
 use nes_emu::cartridge::Cartridge;
 use nes_emu::cheat::CheatSet;
 use nes_emu::input::ControllerButton;
-use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use nes_emu::ppu::SCREEN_HEIGHT;
 use nes_emu::system::System;
-use nes_emu::ui::app::App;
+use nes_emu::ui::app::{App, WideMode};
 use nes_emu::ui::key::Key;
 use nes_emu::ui::painter::{Painter, RgbaPainter};
 use nes_emu::ui::{self, Ui};
@@ -32,9 +32,8 @@ use wasm_bindgen::Clamped;
 
 use host::{SharedStore, SlotStore, WebHost};
 
-/// Frame width in pixels, before any overscan crop.
-pub const FRAME_WIDTH: u32 = SCREEN_WIDTH as u32;
-/// Frame height in pixels, before any overscan crop.
+/// Frame height in pixels, before any overscan crop. The width depends on
+/// the wide view mode: `Emulator::frame_width`.
 pub const FRAME_HEIGHT: u32 = SCREEN_HEIGHT as u32;
 /// Rate of the samples `take_audio` returns, matching `System`'s mixer.
 pub const AUDIO_SAMPLE_RATE: u32 = 44_100;
@@ -78,6 +77,8 @@ pub struct Emulator {
     painter: RgbaPainter,
     store: SharedStore,
     rgba: Vec<u8>,
+    /// True once after a crop or wide change until `take_layout_dirty`.
+    layout_dirty: bool,
     rom_crc32: u32,
     mapper_id: u8,
     battery_backed: bool,
@@ -106,12 +107,14 @@ impl Emulator {
         );
         let (w, h) = app.visible_size();
         let (ow, oh) = ui::overlay_size(w, h);
+        let frame_width = app.frame_width() as usize;
         Ok(Emulator {
             app,
             ui: Ui::new(ui::DEFAULT_FONT_SCALE),
             painter: RgbaPainter::new(ow, oh),
             store,
-            rgba: vec![0; SCREEN_WIDTH * SCREEN_HEIGHT * 4],
+            rgba: vec![0; frame_width * SCREEN_HEIGHT * 4],
+            layout_dirty: true,
             rom_crc32,
             mapper_id,
             battery_backed,
@@ -128,15 +131,77 @@ impl Emulator {
         self.app.record_rewind_frame();
     }
 
-    /// The last frame as 256x240 RGBA with opaque alpha, ready for
-    /// `ImageData`. The page applies the overscan crop when it draws.
+    /// The last frame as `frame_width` x `frame_height` RGBA with opaque
+    /// alpha, ready for `ImageData`: the 384-wide buffer while a wide
+    /// view is on, else the 256-wide picture. The page shows the part
+    /// `picture_rect` names (overscan crop, wide extension).
     pub fn frame_rgba(&mut self) -> Clamped<Vec<u8>> {
-        let rgb = self.app.system.get_frame_buffer();
-        for i in 0..SCREEN_WIDTH * SCREEN_HEIGHT {
-            self.rgba[i * 4..i * 4 + 3].copy_from_slice(&rgb[i * 3..i * 3 + 3]);
+        let width = self.app.frame_width() as usize;
+        let pixels = width * SCREEN_HEIGHT;
+        if self.rgba.len() != pixels * 4 {
+            self.rgba = vec![0; pixels * 4];
+        }
+        let rgb = if self.app.wide == WideMode::Off {
+            self.app.system.get_frame_buffer()
+        } else {
+            self.app.system.get_wide_frame_buffer()
+        };
+        for (i, px) in rgb.chunks_exact(3).take(pixels).enumerate() {
+            self.rgba[i * 4..i * 4 + 3].copy_from_slice(px);
             self.rgba[i * 4 + 3] = 0xFF;
         }
         Clamped(self.rgba.clone())
+    }
+
+    /// Width of `frame_rgba` in pixels: 256, or 384 while a wide view is
+    /// on (`ppu::WIDE_WIDTH`).
+    pub fn frame_width(&self) -> u32 {
+        self.app.frame_width()
+    }
+
+    /// Height of `frame_rgba` in pixels, always 240.
+    pub fn frame_height(&self) -> u32 {
+        FRAME_HEIGHT
+    }
+
+    /// `[x, y, w, h]`: the rectangle of `frame_rgba` to show, after the
+    /// overscan crop and cropped to the wide mode's extension
+    /// (`App::picture_rect`). The canvas is `w` x `h` and the frame is
+    /// drawn at `(-x, -y)`.
+    pub fn picture_rect(&self) -> Vec<u32> {
+        let (x, y, w, h) = self.app.picture_rect();
+        vec![x, y, w, h]
+    }
+
+    /// The wide view mode's label: "off", "16:9" or "max".
+    pub fn wide_mode(&self) -> String {
+        self.app.wide.label().to_string()
+    }
+
+    /// Cycle the wide view (off, 16:9, max), as the W key does.
+    pub fn toggle_wide(&mut self) {
+        self.app.toggle_wide();
+    }
+
+    /// True once after the crop or wide mode changed (and once after
+    /// construction): the page then re-reads `frame_width`,
+    /// `picture_rect` and `overlay_size` and resizes its canvases. Applies
+    /// a pending resize first, so the answer does not depend on whether
+    /// `tick` ran.
+    pub fn take_layout_dirty(&mut self) -> bool {
+        self.apply_layout();
+        std::mem::take(&mut self.layout_dirty)
+    }
+
+    fn apply_layout(&mut self) {
+        if self.app.crop_dirty || self.app.wide_dirty {
+            self.app.crop_dirty = false;
+            self.app.wide_dirty = false;
+            self.layout_dirty = true;
+            let (w, h) = self.app.visible_size();
+            let (ow, oh) = ui::overlay_size(w, h);
+            self.painter.resize(ow, oh);
+        }
     }
 
     /// Drain every sample produced since the last call (44.1 kHz mono,
@@ -205,16 +270,11 @@ impl Emulator {
     }
 
     /// Per-tick housekeeping: the open page's `tick`, and resizing the
-    /// overlay after an overscan crop change.
+    /// overlay after an overscan crop or wide view change (which also
+    /// raises `take_layout_dirty`).
     pub fn tick(&mut self) {
         self.ui.tick(&mut self.app);
-        if self.app.crop_dirty || self.app.wide_dirty {
-            self.app.crop_dirty = false;
-            self.app.wide_dirty = false;
-            let (w, h) = self.app.visible_size();
-            let (ow, oh) = ui::overlay_size(w, h);
-            self.painter.resize(ow, oh);
-        }
+        self.apply_layout();
     }
 
     // ---------------------------------------------------------- overlay
@@ -451,14 +511,6 @@ impl Emulator {
         self.battery_backed
     }
 
-    pub fn frame_width(&self) -> u32 {
-        FRAME_WIDTH
-    }
-
-    pub fn frame_height(&self) -> u32 {
-        FRAME_HEIGHT
-    }
-
     pub fn audio_sample_rate(&self) -> u32 {
         AUDIO_SAMPLE_RATE
     }
@@ -600,13 +652,65 @@ mod tests {
     fn crop_toggle_resizes_the_overlay() {
         let mut emu = Emulator::new(&synthetic_rom(false)).unwrap();
         assert!(emu.crop_enabled());
+        assert!(emu.take_layout_dirty());
+        assert!(!emu.take_layout_dirty());
         emu.set_crop(false);
         emu.tick();
         assert!(!emu.crop_enabled());
         assert_eq!(emu.overlay_size(), vec![768, 720]);
+        assert_eq!(emu.picture_rect(), vec![0, 0, 256, 240]);
+        assert!(emu.take_layout_dirty());
         emu.set_crop(true);
         emu.tick();
         assert_eq!(emu.overlay_size(), vec![720, 672]);
+        assert_eq!(emu.picture_rect(), vec![8, 8, 240, 224]);
+        assert!(emu.take_layout_dirty());
+        assert!(!emu.take_layout_dirty());
+    }
+
+    #[test]
+    fn wide_toggle_widens_the_frame_and_picture() {
+        let mut emu = Emulator::new(&synthetic_rom(false)).unwrap();
+        emu.take_layout_dirty();
+        assert_eq!(emu.wide_mode(), "off");
+        assert_eq!(emu.frame_width(), 256);
+        assert_eq!(emu.frame_rgba().len(), 256 * 240 * 4);
+
+        // W cycles to 16:9: 47 columns per side at the 224-line crop.
+        assert!(emu.key_down("KeyW"));
+        assert_eq!(emu.wide_mode(), "16:9");
+        assert!(emu.take_layout_dirty());
+        assert_eq!(emu.frame_width(), 384);
+        assert_eq!(emu.frame_height(), 240);
+        assert_eq!(emu.picture_rect(), vec![17, 8, 350, 224]);
+        assert_eq!(emu.overlay_size(), vec![1050, 672]);
+        emu.run_frame();
+        let frame = emu.frame_rgba();
+        assert_eq!(frame.len(), 384 * 240 * 4);
+        assert!(frame.iter().skip(3).step_by(4).all(|&a| a == 0xFF));
+
+        // Crop off: 59 per side at 240 lines.
+        emu.set_crop(false);
+        assert!(emu.take_layout_dirty());
+        assert_eq!(emu.picture_rect(), vec![5, 0, 374, 240]);
+        assert_eq!(emu.overlay_size(), vec![1122, 720]);
+
+        // Max shows the whole 384-wide buffer.
+        assert!(emu.key_down("KeyW"));
+        assert_eq!(emu.wide_mode(), "max");
+        emu.tick();
+        assert_eq!(emu.picture_rect(), vec![0, 0, 384, 240]);
+        assert_eq!(emu.overlay_size(), vec![1152, 720]);
+        assert!(emu.take_layout_dirty());
+
+        // Off again restores the picture.
+        emu.toggle_wide();
+        assert_eq!(emu.wide_mode(), "off");
+        assert!(emu.take_layout_dirty());
+        assert_eq!(emu.frame_width(), 256);
+        assert_eq!(emu.picture_rect(), vec![0, 0, 256, 240]);
+        assert_eq!(emu.frame_rgba().len(), 256 * 240 * 4);
+        assert_eq!(emu.overlay_size(), vec![768, 720]);
     }
 
     #[test]
