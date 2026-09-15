@@ -17,6 +17,10 @@ A Nintendo Entertainment System (NES) emulator written in Rust.
 
 ## Building
 
+Every build, run and check below is also wrapped in the `Makefile`. Run
+`make help` for the target list (`make check` is the full definition of
+done, `make run ROM=roms/mario.nes` launches a game).
+
 Install dependencies on macOS:
 ```bash
 brew install sdl2
@@ -78,8 +82,8 @@ RUST_LOG=debug cargo run -- roms/Super_mario_brothers.nes
 
 Or use the provided test scripts:
 ```bash
-./test_controls.sh        # Normal mode
-./test_controls_debug.sh  # Debug mode with controller logging
+scripts/test_controls.sh        # Normal mode
+scripts/test_controls_debug.sh  # Debug mode with controller logging
 ```
 
 ## Controls
