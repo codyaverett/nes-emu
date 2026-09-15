@@ -25,6 +25,9 @@ setup: ## Install the toolchain bits (SDL2, wasm target, wasm-pack)
 	rustup target add wasm32-unknown-unknown
 	cargo install wasm-pack
 
+install: ## Install the nes-emu binary into ~/.cargo/bin
+	cargo install --path . --locked
+
 clean: ## Remove cargo and wasm build output
 	cargo clean
 	rm -rf web/pkg web/pkg-node
@@ -84,6 +87,6 @@ web-serve: ## Serve web/ on http://127.0.0.1:8080/ (run web-build first)
 
 web-check: web-test web-size ## Everything CI runs for the web target
 
-.PHONY: help setup clean build release run run-debug check test clippy fmt \
+.PHONY: help setup install clean build release run run-debug check test clippy fmt \
         fmt-check core-test screenshots wasm web-build web-test web-size \
         web-serve web-check
