@@ -22,6 +22,14 @@ too. Stats under the canvas show emulated fps, display rate, queued
 audio and underruns; `window.nesStats` holds the same numbers for
 scripts.
 
+The "Full frame" button toggles the 8 pixel overscan crop and "Wide"
+(or the W key, or the `wide` palette command) cycles the wide view: off,
+16:9, max (`docs/plans/WIDESCREEN.md`). Wide mode shows background
+columns beyond the picture edges from the same nametable memory; sprites
+stay inside the native 256 columns. The canvas and its CSS box are sized
+from the core's `frame_width`, `picture_rect` and `overlay_size` once
+a ROM is loaded.
+
 ## Saves, states and cheats
 
 Everything is stored in the browser's IndexedDB, keyed by the ROM's

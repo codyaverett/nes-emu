@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 
 use nes_emu::cartridge::Cartridge;
 use nes_emu::input::ControllerButton;
-use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use nes_emu::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH, WIDE_EXT, WIDE_WIDTH};
 use nes_emu::system::System;
 use nes_emu::ui;
-use ui::app::{App, AudioQueue};
+use ui::app::{App, AudioQueue, WideMode};
 use ui::host::FileHost;
 use ui::key::Key;
 use ui::painter::Painter;
@@ -147,11 +147,18 @@ fn controller_for(app: &mut App, player: Player) -> &mut nes_emu::input::Control
     }
 }
 
-/// The part of the frame texture that is copied to the window.
+/// The part of the frame texture that is copied to the window. The
+/// texture is always `WIDE_WIDTH` wide with the picture at `WIDE_EXT`;
+/// with the wide view off only the picture is uploaded, so the rectangle
+/// is offset by `WIDE_EXT` (docs/plans/WIDESCREEN.md).
 fn source_rect(app: &App) -> Rect {
-    let crop = app.crop() as i32;
-    let (w, h) = app.visible_size();
-    Rect::new(crop, crop, w, h)
+    let (x, y, w, h) = app.picture_rect();
+    let x = if app.wide == WideMode::Off {
+        x + WIDE_EXT as u32
+    } else {
+        x
+    };
+    Rect::new(x as i32, y as i32, w, h)
 }
 
 /// Command-line options.
@@ -519,7 +526,7 @@ fn main() -> Result<()> {
     let mut texture = texture_creator
         .create_texture_streaming(
             PixelFormatEnum::RGB24,
-            SCREEN_WIDTH as u32,
+            WIDE_WIDTH as u32,
             SCREEN_HEIGHT as u32,
         )
         .map_err(|e| anyhow::anyhow!("Texture creation failed: {}", e))?;
@@ -575,8 +582,9 @@ fn main() -> Result<()> {
             break 'running;
         }
 
-        if app.crop_dirty {
+        if app.crop_dirty || app.wide_dirty {
             app.crop_dirty = false;
+            app.wide_dirty = false;
             src_rect = source_rect(&app);
             let (w, h) = app.visible_size();
             if let Err(e) = canvas.window_mut().set_size(w * SCALE, h * SCALE) {
@@ -621,9 +629,25 @@ fn main() -> Result<()> {
             }
         }
 
-        texture
-            .update(None, app.system.get_frame_buffer(), SCREEN_WIDTH * 3)
-            .map_err(|e| anyhow::anyhow!("Texture update failed: {}", e))?;
+        if app.wide == WideMode::Off {
+            let picture = Rect::new(
+                WIDE_EXT as i32,
+                0,
+                SCREEN_WIDTH as u32,
+                SCREEN_HEIGHT as u32,
+            );
+            texture
+                .update(
+                    Some(picture),
+                    app.system.get_frame_buffer(),
+                    SCREEN_WIDTH * 3,
+                )
+                .map_err(|e| anyhow::anyhow!("Texture update failed: {}", e))?;
+        } else {
+            texture
+                .update(None, app.system.get_wide_frame_buffer(), WIDE_WIDTH * 3)
+                .map_err(|e| anyhow::anyhow!("Texture update failed: {}", e))?;
+        }
 
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();

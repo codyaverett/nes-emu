@@ -70,3 +70,6 @@ When adding documentation:
 - Place fix summaries in `/summaries/`
 - Place testing/debugging guides in `/testing/`
 - Update this README if adding new categories
+
+- `plans/WIDESCREEN.md` - Optional wide view drawing background tiles beyond the picture edges, toggled while playing; SDL, web, fallback and profiles in four phases.
+- `debugging/WIDESCREEN.md` - Wide view implementation notes: scroll sample point, side-effect-free fetches, measured accuracy (#63).

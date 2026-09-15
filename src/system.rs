@@ -255,6 +255,7 @@ impl System {
     pub fn load_cartridge(&mut self, cartridge: Cartridge) {
         // Pattern tables and mirroring are served by the cartridge mapper on
         // every PPU access, so nothing is copied into the PPU here.
+        self.ppu.wide_profile = crate::ppu::WideProfile::for_crc(cartridge.rom_crc32);
         self.cartridge = Some(cartridge);
         self.battery_saved_hash.set(None);
         self.reset();
@@ -3183,6 +3184,21 @@ impl System {
         let lo = self.pop() as u16;
         let hi = self.pop() as u16;
         (hi << 8) | lo
+    }
+
+    /// Turn the wide background view on or off (docs/plans/WIDESCREEN.md).
+    pub fn set_wide_enabled(&mut self, on: bool) {
+        self.ppu.set_wide_enabled(on);
+    }
+
+    pub fn wide_enabled(&self) -> bool {
+        self.ppu.wide_enabled
+    }
+
+    /// `ppu::WIDE_WIDTH` x `ppu::SCREEN_HEIGHT` RGB; empty while the wide
+    /// view is off.
+    pub fn get_wide_frame_buffer(&self) -> &[u8] {
+        self.ppu.get_wide_frame_buffer()
     }
 
     pub fn get_frame_buffer(&self) -> &[u8] {

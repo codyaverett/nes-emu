@@ -12,6 +12,33 @@ const A12_FILTER_CYCLES: u16 = 10;
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
 
+/// Columns the wide view adds on each side of the picture. The renderer
+/// always fills this many; frontends crop to the aspect they show
+/// (docs/plans/WIDESCREEN.md).
+pub const WIDE_EXT: usize = 64;
+/// Width of the wide frame buffer: the picture plus both extensions.
+pub const WIDE_WIDTH: usize = SCREEN_WIDTH + 2 * WIDE_EXT;
+
+/// The scroll state one visible line renders with, sampled at the end of
+/// dot 320 of the previous line: `copy_x` has run, any hblank $2005/$2006
+/// write has landed and the next-line prefetch has not yet advanced `v`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LineScroll {
+    /// Full `v` register: nametable bits, coarse X/Y and fine Y.
+    pub v: u16,
+    /// Fine X scroll (0-7).
+    pub x: u8,
+    /// PPUCTRL bit 4: background pattern table at $1000.
+    pub bg_table_hi: bool,
+    /// PPUMASK bit 3: background enabled.
+    pub show_bg: bool,
+    /// PPUMASK bit 1: background shown in the leftmost 8 columns.
+    pub show_bg_left: bool,
+    /// True once this line's scroll was captured with rendering on; false
+    /// means the line renders the backdrop colour only.
+    pub captured: bool,
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy)]
     pub struct PpuCtrl: u8 {
@@ -71,6 +98,10 @@ impl _Sprite {
 /// decays to 0. Hardware takes roughly 600 ms (36 NTSC frames); blargg's
 /// ppu_open_bus expects the value intact immediately after a write and gone
 /// after about a second.
+pub mod wide;
+
+pub use wide::{WideCache, WideProfile};
+
 pub const IO_BUS_DECAY_FRAMES: u64 = 36;
 
 pub struct Ppu {
@@ -104,6 +135,20 @@ pub struct Ppu {
     io_bus_stamp: [u64; 8],
 
     pub frame_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
+    /// Scroll each visible line rendered with (docs/plans/WIDESCREEN.md).
+    /// Derived render state like `frame_buffer`: not part of save states.
+    line_scroll: [LineScroll; SCREEN_HEIGHT],
+    /// When set, `wide_buffer` receives the background beyond both picture
+    /// edges each line and the centre columns at the end of the frame.
+    pub wide_enabled: bool,
+    /// `WIDE_WIDTH` x `SCREEN_HEIGHT` RGB, valid only while `wide_enabled`.
+    /// Heap allocated so the by-value `Ppu` does not grow.
+    wide_buffer: Vec<u8>,
+    /// Stale-column detection and remembered columns (`wide.rs`).
+    wide_cache: Option<Box<WideCache>>,
+    wide_fallback: bool,
+    /// Per-game adjustments; set by `System::load_cartridge`.
+    pub wide_profile: WideProfile,
     /// Rising edge of the NMI output line, held until the CPU samples it.
     /// The line itself is `VBLANK_STARTED && NMI_ENABLE`; if the line drops
     /// again before the CPU has sampled the edge (a `$2002` read or an NMI
@@ -191,6 +236,12 @@ impl Ppu {
             io_bus: 0,
             io_bus_stamp: [0; 8],
             frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 3],
+            line_scroll: [LineScroll::default(); SCREEN_HEIGHT],
+            wide_enabled: false,
+            wide_buffer: Vec::new(),
+            wide_cache: None,
+            wide_fallback: true,
+            wide_profile: WideProfile::default(),
             nmi_interrupt: false,
             nmi_line: false,
             suppress_vbl: false,
@@ -576,6 +627,7 @@ impl Ppu {
             0x2000..=0x2FFF => {
                 let index = self.mirror_nametable_addr(addr, mapper.mirroring());
                 self.nametable_ram[index as usize] = value;
+                self.note_wide_write(addr);
             }
             0x3000..=0x3EFF => {
                 // Mirror of 0x2000-0x2EFF
@@ -723,6 +775,38 @@ impl Ppu {
             }
         }
 
+        // Sample the scroll the next visible line will render with and, in
+        // wide mode, draw that line's side strips from it. See `LineScroll`.
+        if self.cycle == 320 && (self.scanline == 261 || self.scanline < 239) {
+            let line = if self.scanline == 261 {
+                0
+            } else {
+                self.scanline as usize + 1
+            };
+            self.line_scroll[line] = LineScroll {
+                v: self.v,
+                x: self.x,
+                bg_table_hi: self.ctrl.contains(PpuCtrl::BG_PATTERN),
+                show_bg: self.mask.contains(PpuMask::SHOW_BG),
+                show_bg_left: self.mask.contains(PpuMask::SHOW_BG_LEFT),
+                captured: rendering_enabled,
+            };
+            if self.wide_enabled {
+                self.render_wide_line(line, mapper);
+            }
+        }
+        // The picture line just finished (dots 1-256) goes into the middle
+        // of the wide frame. When the game masks the leftmost 8 columns
+        // they would sit as a dark bar between the left strip and the
+        // picture, so they are drawn from the nametable like the strips.
+        if self.cycle == 320 && self.scanline < 240 && self.wide_enabled {
+            let line = self.scanline as usize;
+            self.copy_wide_centre_line(line);
+            if !self.line_scroll[line].show_bg_left {
+                self.render_wide_columns(line, 0..8, mapper);
+            }
+        }
+
         // Odd frames with rendering enabled are one dot short: the last dot
         // of the pre-render line is skipped.
         if self.scanline == 261 && self.cycle == 338 && self.frame % 2 == 1 && rendering_enabled {
@@ -737,7 +821,186 @@ impl Ppu {
                 self.scanline = 0;
                 self.frame += 1;
             }
+            if self.scanline == 240 && self.wide_enabled {
+                self.update_wide_cache();
+            }
         }
+    }
+
+    /// Stamp a nametable write for the stale-column cache, unless it lands
+    /// in the profile's status-bar rows or the attribute table.
+    fn note_wide_write(&mut self, addr: u16) {
+        let Some(cache) = self.wide_cache.as_mut() else {
+            return;
+        };
+        let row = (addr >> 5) & 0x1F;
+        if row >= wide::ROWS as u16 {
+            return;
+        }
+        let line = row * 8;
+        if line < self.wide_profile.hud_top
+            || line >= SCREEN_HEIGHT as u16 - self.wide_profile.hud_bottom
+        {
+            return;
+        }
+        let strip_col = ((addr >> 10) & 1) * 32 + (addr & 0x1F);
+        cache.note_write(strip_col);
+    }
+
+    /// Whether the stale-column fallback runs; off draws every strip column
+    /// live. On by default.
+    pub fn set_wide_fallback(&mut self, on: bool) {
+        self.wide_fallback = on;
+    }
+
+    /// Feed the finished frame to the stale-column cache.
+    fn update_wide_cache(&mut self) {
+        if let Some(cache) = self.wide_cache.as_mut() {
+            cache.end_of_frame(&self.line_scroll);
+        }
+    }
+
+    /// Scroll state line `y` rendered with in the current or last frame.
+    pub fn line_scroll(&self, y: usize) -> LineScroll {
+        self.line_scroll[y]
+    }
+
+    /// Turn the wide view on or off. Turning it on allocates the wide
+    /// buffer and fills it with the current picture so the first frame is
+    /// not garbage.
+    pub fn set_wide_enabled(&mut self, on: bool) {
+        self.wide_enabled = on;
+        if on && self.wide_buffer.len() != WIDE_WIDTH * SCREEN_HEIGHT * 3 {
+            self.wide_buffer = vec![0; WIDE_WIDTH * SCREEN_HEIGHT * 3];
+            self.copy_wide_centre();
+        }
+        if on && self.wide_cache.is_none() {
+            self.wide_cache = Some(Box::new(WideCache::new()));
+        }
+        if !on {
+            // Drop the cache: a later enable starts fresh, and memory is
+            // not held while the view is off.
+            self.wide_cache = None;
+        }
+    }
+
+    /// The wide frame: `WIDE_WIDTH` x `SCREEN_HEIGHT` RGB, the picture in
+    /// the middle and `WIDE_EXT` background columns on each side. Empty
+    /// until `set_wide_enabled(true)`.
+    pub fn get_wide_frame_buffer(&self) -> &[u8] {
+        &self.wide_buffer
+    }
+
+    fn copy_wide_centre(&mut self) {
+        for y in 0..SCREEN_HEIGHT {
+            self.copy_wide_centre_line(y);
+        }
+    }
+
+    fn copy_wide_centre_line(&mut self, y: usize) {
+        let src = y * SCREEN_WIDTH * 3;
+        let dst = (y * WIDE_WIDTH + WIDE_EXT) * 3;
+        self.wide_buffer[dst..dst + SCREEN_WIDTH * 3]
+            .copy_from_slice(&self.frame_buffer[src..src + SCREEN_WIDTH * 3]);
+    }
+
+    /// Draw the `WIDE_EXT` background columns left and right of line `y`
+    /// from the nametable strip, using the scroll captured for that line.
+    /// Side-effect free: nametable reads go through the current mirroring
+    /// and pattern reads through `Mapper::ppu_peek`, so bank latches and
+    /// the MMC3 A12 counter never see these fetches.
+    fn render_wide_line(&mut self, y: usize, mapper: &dyn Mapper) {
+        self.render_wide_columns(y, -(WIDE_EXT as i32)..0, mapper);
+        self.render_wide_columns(
+            y,
+            SCREEN_WIDTH as i32..(SCREEN_WIDTH + WIDE_EXT) as i32,
+            mapper,
+        );
+    }
+
+    /// Draw background columns `px` (picture coordinates, negative for the
+    /// left strip) of line `y` into the wide buffer from the nametable.
+    fn render_wide_columns(
+        &mut self,
+        y: usize,
+        px_range: std::ops::Range<i32>,
+        mapper: &dyn Mapper,
+    ) {
+        let ls = self.line_scroll[y];
+        let backdrop = self.get_color_from_palette(0);
+        let mirroring = mapper.mirroring();
+        // Only side-by-side nametables give the strips real neighbours;
+        // status-bar lines have no meaningful extension either.
+        let side_by_side = matches!(mirroring, Mirroring::Vertical | Mirroring::FourScreen);
+        let hud = (y as u16) < self.wide_profile.hud_top
+            || (y as u16) >= SCREEN_HEIGHT as u16 - self.wide_profile.hud_bottom;
+        let usable = ls.captured && ls.show_bg && side_by_side && !hud;
+        let line_world = self
+            .wide_cache
+            .as_ref()
+            .filter(|_| self.wide_fallback)
+            .map(|c| c.line_world(&ls));
+        let table: u16 = if ls.bg_table_hi { 0x1000 } else { 0x0000 };
+        let scroll_x = (((ls.v >> 10) & 1) * 256 + (ls.v & 0x1F) * 8) as i32 + ls.x as i32;
+        let coarse_y = (ls.v >> 5) & 0x1F;
+        let fine_y = (ls.v >> 12) & 0x07;
+        let nt_v = ls.v & 0x0800;
+
+        let row = y * WIDE_WIDTH * 3;
+        let draw = |px: i32, buf: &mut [u8], colour: (u8, u8, u8)| {
+            let i = row + (px + WIDE_EXT as i32) as usize * 3;
+            buf[i] = colour.0;
+            buf[i + 1] = colour.1;
+            buf[i + 2] = colour.2;
+        };
+
+        let mut buf = std::mem::take(&mut self.wide_buffer);
+        let mut decided: Option<(i64, wide::Decision)> = None;
+        for px in px_range {
+            if !usable {
+                draw(px, &mut buf, backdrop);
+                continue;
+            }
+            let world = (scroll_x + px).rem_euclid(512) as u16;
+            let column = world / 8;
+            // Stale-column check, once per tile column (Phase 4).
+            if let (Some(cache), Some(lw)) = (self.wide_cache.as_ref(), line_world) {
+                let tw = (lw + px as i64).div_euclid(8);
+                let decision = match decided {
+                    Some((t, d)) if t == tw => d,
+                    _ => {
+                        let d = cache.decide(tw);
+                        decided = Some((tw, d));
+                        d
+                    }
+                };
+                if decision == wide::Decision::Stale {
+                    draw(px, &mut buf, backdrop);
+                    continue;
+                }
+            }
+            let nt_h = ((column / 32) & 1) << 10;
+            let coarse_x = column % 32;
+            let nt_addr = 0x2000 | nt_v | nt_h | (coarse_y << 5) | coarse_x;
+            let tile = self.nametable_ram[self.mirror_nametable_addr(nt_addr, mirroring) as usize];
+            let at_addr = 0x23C0 | nt_v | nt_h | ((coarse_y >> 2) << 3) | (coarse_x >> 2);
+            let attribute =
+                self.nametable_ram[self.mirror_nametable_addr(at_addr, mirroring) as usize];
+            let shift = ((coarse_y & 0x02) << 1) | (coarse_x & 0x02);
+            let palette = (attribute >> shift) & 0x03;
+            let pattern = table + tile as u16 * 16 + fine_y;
+            let bit = 7 - (world % 8);
+            let lo = (mapper.ppu_peek(pattern) >> bit) & 1;
+            let hi = (mapper.ppu_peek(pattern + 8) >> bit) & 1;
+            let pixel = (hi << 1) | lo;
+            let colour = if pixel == 0 {
+                backdrop
+            } else {
+                self.get_color_from_palette((palette << 2) | pixel)
+            };
+            draw(px, &mut buf, colour);
+        }
+        self.wide_buffer = buf;
     }
 
     /// One dot of the background fetch pipeline on a line with rendering
@@ -2158,5 +2421,179 @@ mod state_tests {
             restored.load(&mut Reader::new(cut)),
             Err(crate::state::StateError::Truncated)
         );
+    }
+}
+
+#[cfg(test)]
+mod wide_tests {
+    use super::*;
+    use crate::cartridge::{Cartridge, Mirroring};
+
+    /// CHR where tile 1 is solid colour 1, tile 2 solid colour 2, tile 3
+    /// solid colour 3; tile 0 blank.
+    fn solid_chr() -> Vec<u8> {
+        let mut chr = vec![0u8; 0x2000];
+        for (tile, (lo, hi)) in [(1usize, (0xFF, 0x00)), (2, (0x00, 0xFF)), (3, (0xFF, 0xFF))] {
+            for r in 0..8 {
+                chr[tile * 16 + r] = lo;
+                chr[tile * 16 + 8 + r] = hi;
+            }
+        }
+        chr
+    }
+
+    fn ppu_with_strip() -> (Ppu, Box<dyn Mapper>) {
+        let mut ppu = Ppu::new();
+        let mapper = Cartridge::build_mapper(0, vec![0; 0x8000], solid_chr(), Mirroring::Vertical);
+        // NT0 all tile 1, NT1 all tile 2; attributes zero (palette 0).
+        for i in 0..0x3C0 {
+            ppu.nametable_ram[i] = 1;
+            ppu.nametable_ram[0x400 + i] = 2;
+        }
+        for i in 0x3C0..0x400 {
+            ppu.nametable_ram[i] = 0;
+            ppu.nametable_ram[0x400 + i] = 0;
+        }
+        // Palette 0: backdrop $0F, colours $16 $2A $30.
+        ppu.palette[0] = 0x0F;
+        ppu.palette[1] = 0x16;
+        ppu.palette[2] = 0x2A;
+        ppu.palette[3] = 0x30;
+        (ppu, mapper)
+    }
+
+    fn set_scroll(ppu: &mut Ppu, m: &mut dyn Mapper, x: u16, y: u8) {
+        ppu.write_register(0x2000, (x >> 8) as u8 & 1, m); // nametable H bit
+        ppu.write_register(0x2005, x as u8, m);
+        ppu.write_register(0x2005, y, m);
+    }
+
+    fn run_frame(ppu: &mut Ppu, m: &mut dyn Mapper) {
+        let f = ppu.frame;
+        while ppu.frame == f {
+            ppu.step(m);
+        }
+    }
+
+    fn wide_pixel(ppu: &Ppu, px: i32, y: usize) -> (u8, u8, u8) {
+        let i = (y * WIDE_WIDTH + (px + WIDE_EXT as i32) as usize) * 3;
+        let b = ppu.get_wide_frame_buffer();
+        (b[i], b[i + 1], b[i + 2])
+    }
+
+    #[test]
+    fn wide_buffer_is_empty_until_enabled_and_frame_buffer_is_untouched() {
+        let (mut ppu, mut m) = ppu_with_strip();
+        ppu.write_register(0x2001, 0x08, m.as_mut());
+        // Two frames: the first one starts with rendering enabled mid-frame
+        // and is partial, the second is steady state.
+        run_frame(&mut ppu, m.as_mut());
+        run_frame(&mut ppu, m.as_mut());
+        assert!(ppu.get_wide_frame_buffer().is_empty());
+        let before = ppu.frame_buffer;
+        ppu.set_wide_enabled(true);
+        run_frame(&mut ppu, m.as_mut());
+        assert_eq!(
+            ppu.get_wide_frame_buffer().len(),
+            WIDE_WIDTH * SCREEN_HEIGHT * 3
+        );
+        assert_eq!(
+            ppu.frame_buffer, before,
+            "wide mode must not change the picture"
+        );
+        // Centre of the wide buffer is the picture, except the masked
+        // leftmost 8 columns (PPUMASK bit 1 clear here), which are drawn
+        // from the nametable instead of the dark bar the picture shows.
+        let y = 100;
+        let centre =
+            &ppu.get_wide_frame_buffer()[(y * WIDE_WIDTH + WIDE_EXT) * 3..][..SCREEN_WIDTH * 3];
+        assert_eq!(
+            &centre[8 * 3..],
+            &ppu.frame_buffer[y * SCREEN_WIDTH * 3 + 8 * 3..][..SCREEN_WIDTH * 3 - 8 * 3]
+        );
+        let c1 = NES_PALETTE[0x16];
+        for px in 0..8 {
+            assert_eq!(wide_pixel(&ppu, px, y), c1, "patched column {px}");
+        }
+    }
+
+    #[test]
+    fn strips_follow_the_nametable_strip_with_wraparound() {
+        let (mut ppu, mut m) = ppu_with_strip();
+        ppu.set_wide_enabled(true);
+        ppu.write_register(0x2001, 0x08, m.as_mut());
+        set_scroll(&mut ppu, m.as_mut(), 200, 0);
+        run_frame(&mut ppu, m.as_mut());
+        run_frame(&mut ppu, m.as_mut());
+        let c1 = NES_PALETTE[0x16];
+        let c2 = NES_PALETTE[0x2A];
+        let y = 50;
+        // Left strip: world 136..199, NT0 -> colour 1.
+        for px in -(WIDE_EXT as i32)..0 {
+            assert_eq!(wide_pixel(&ppu, px, y), c1, "left px {px}");
+        }
+        // Right strip: world 456..519. NT1 until 511, then NT0 again.
+        for px in 256..(256 + WIDE_EXT as i32) {
+            let world = 200 + px;
+            let want = if world < 512 { c2 } else { c1 };
+            assert_eq!(wide_pixel(&ppu, px, y), want, "right px {px} world {world}");
+        }
+    }
+
+    #[test]
+    fn fine_x_shifts_the_strip_by_single_pixels() {
+        let (mut ppu, mut m) = ppu_with_strip();
+        ppu.set_wide_enabled(true);
+        ppu.write_register(0x2001, 0x08, m.as_mut());
+        // Scroll 253: right strip world 509..: three pixels of NT1 then NT0.
+        set_scroll(&mut ppu, m.as_mut(), 253, 0);
+        run_frame(&mut ppu, m.as_mut());
+        run_frame(&mut ppu, m.as_mut());
+        let c1 = NES_PALETTE[0x16];
+        let c2 = NES_PALETTE[0x2A];
+        assert_eq!(wide_pixel(&ppu, 256, 10), c2);
+        assert_eq!(wide_pixel(&ppu, 258, 10), c2);
+        assert_eq!(wide_pixel(&ppu, 259, 10), c1);
+    }
+
+    #[test]
+    fn mid_frame_scroll_change_applies_from_the_next_line() {
+        let (mut ppu, mut m) = ppu_with_strip();
+        ppu.set_wide_enabled(true);
+        // The nametables were filled directly, never written through $2007,
+        // so the stale-column fallback would (correctly) blank the columns
+        // this test inspects; it checks scroll timing, not staleness.
+        ppu.set_wide_fallback(false);
+        ppu.write_register(0x2001, 0x08, m.as_mut());
+        set_scroll(&mut ppu, m.as_mut(), 0, 0);
+        run_frame(&mut ppu, m.as_mut());
+        // Next frame: at line 100 dot 0 switch to scroll 256 (NT1 at left).
+        let f = ppu.frame;
+        while !(ppu.scanline == 100 && ppu.cycle == 0) {
+            ppu.step(m.as_mut());
+        }
+        set_scroll(&mut ppu, m.as_mut(), 256, 0);
+        while ppu.frame == f {
+            ppu.step(m.as_mut());
+        }
+        let c1 = NES_PALETTE[0x16];
+        let c2 = NES_PALETTE[0x2A];
+        // Line 99 used scroll 0: right strip is NT1 (256..319 -> NT1).
+        assert_eq!(wide_pixel(&ppu, 256, 99), c2);
+        // Line 100 rendered with copy_x at its own dot 257, so the change
+        // shows from line 101: right strip world 512.. -> NT0.
+        assert_eq!(wide_pixel(&ppu, 256, 101), c1);
+        assert_eq!(ppu.line_scroll(101).v & 0x0400, 0x0400);
+    }
+
+    #[test]
+    fn disabled_background_renders_backdrop_in_the_strips() {
+        let (mut ppu, mut m) = ppu_with_strip();
+        ppu.set_wide_enabled(true);
+        ppu.write_register(0x2001, 0x10, m.as_mut()); // sprites only
+        run_frame(&mut ppu, m.as_mut());
+        run_frame(&mut ppu, m.as_mut());
+        assert_eq!(wide_pixel(&ppu, -1, 20), NES_PALETTE[0x0F]);
+        assert_eq!(wide_pixel(&ppu, 300, 20), NES_PALETTE[0x0F]);
     }
 }

@@ -83,6 +83,8 @@ pub fn builtin_commands() -> Vec<Command> {
             "Show/hide 8 px border",
             App::toggle_crop,
         ),
+        // Wide view (docs/plans/WIDESCREEN.md, issue #63).
+        Command::run_arg("wide", "off/16:9/max; cycles", App::wide_command),
         Command::tool("help", "Keys and commands", ToolId::Help),
         Command::run("quit", "Save RAM and exit", App::quit),
         // Cheats (docs/debugging/CHEAT_ENGINE.md, issue #32).
