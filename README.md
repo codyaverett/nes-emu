@@ -66,6 +66,20 @@ Or after building:
 ./target/release/nes-emu <path_to_rom.nes>
 ```
 
+`cargo run` defaults to the `nes-emu` binary (`default-run` in `Cargo.toml`);
+the crate also builds a `test_output` helper, so without `default-run` cargo
+would refuse with "could not determine which binary to run". Use
+`--bin nes-emu` explicitly if you ever remove it. It needs the default `sdl`
+feature (SDL2 installed, e.g. `brew install sdl2`).
+
+### Quick Start with Final Fantasy
+
+From the repo root:
+
+```bash
+cargo run --release -- roms/final_fantasy.nes
+```
+
 ### Quick Start with Super Mario Bros
 
 ```bash
